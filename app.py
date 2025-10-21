@@ -1,18 +1,30 @@
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict, Any
-import os, smtplib, ssl, time, asyncio, sqlite3, secrets, hashlib, datetime
+import os, smtplib, ssl, time, asyncio, sqlite3, secrets, hashlib, datetime, logging
 from email.message import EmailMessage
 
 # --- News deps ---
 import httpx, feedparser
 from dateutil import parser as dateparser
 
-app = FastAPI(title="MEDIAZION Backend (contact + news + mediadores)", version="1.0.0")
+app = FastAPI(title="MEDIAZION Backend (contact + news + mediadores)", version="1.1.0")
 
-# ===== CORS =====
-ALLOWED = os.getenv("ALLOWED_ORIGINS", "*")
-allow_origins = [o.strip() for o in ALLOWED.split(",")] if ALLOWED and ALLOWED != "*" else ["*"]
+# ========= CORS (cerrado por defecto, configurable por env) =========
+# Pon aquí tu dominio de Vercel si cambia. Puedes usar ALLOWED_ORIGINS env para sobreescribir.
+DEFAULT_ALLOWED = [
+    "https://mediazion.eu",
+    # sustituye por tu URL actual de Vercel (producción)
+    "https://mediazion-frontend-a0692vjfn-soluzzzs-projects.vercel.app",
+]
+allowed_env = os.getenv("ALLOWED_ORIGINS", "")
+if allowed_env.strip() and allowed_env.strip() != "*":
+    allow_origins = [o.strip() for o in allowed_env.split(",") if o.strip()]
+elif allowed_env.strip() == "*":
+    allow_origins = ["*"]
+else:
+    allow_origins = DEFAULT_ALLOWED
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
@@ -21,19 +33,40 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ===== Health =====
+# ========= Logging sencillo =========
+logger = logging.getLogger("mediazion")
+logging.basicConfig(level=logging.INFO)
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    origin = request.headers.get("origin")
+    logger.info(f"[REQ] {request.method} {request.url.path}  origin={origin}")
+    # respuesta OPTIONS (preflight) explícita para ver CORS
+    if request.method == "OPTIONS":
+        resp = await call_next(request)
+        logger.info(f"[CORS] preflight path={request.url.path} status={resp.status_code} allow_origins={allow_origins}")
+        return resp
+    response = await call_next(request)
+    logger.info(f"[RESP] {request.method} {request.url.path} -> {response.status_code}")
+    return response
+
+# ========= Health =========
 @app.get("/health")
 def health():
     return {"ok": True, "service": "mediazion-backend"}
 
-# ===== Email helper (SMTP Nominalia) =====
+# ========= Ping de contacto (para probar CORS desde el navegador) =========
+@app.get("/contact/ping")
+def contact_ping():
+    return {"ok": True, "message": "CONTACT PING OK"}
+
+# ========= Email helper (SMTP Nominalia) =========
 def send_email_smtp(subject: str, body: str, mail_from: str, mail_to: str):
     host = os.getenv("SMTP_HOST")
     port = int(os.getenv("SMTP_PORT", "465"))
     user = os.getenv("SMTP_USER")
     password = os.getenv("SMTP_PASS")
     use_tls = os.getenv("SMTP_TLS", "false").lower() in ("1", "true", "yes")
-
     if not host or not user or not password or not mail_to:
         raise RuntimeError("SMTP not configured (check SMTP_HOST/USER/PASS and MAIL_TO).")
 
@@ -46,19 +79,20 @@ def send_email_smtp(subject: str, body: str, mail_from: str, mail_to: str):
     msg["Subject"] = subject
     msg.set_content(body)
 
-    if port == 465 and not use_tls:  # SSL directo
+    # 465: SSL directo ; 587: STARTTLS
+    if port == 465 and not use_tls:
         context = ssl.create_default_context()
         with smtplib.SMTP_SSL(host, port, context=context, timeout=30) as server:
             server.login(user, password)
             server.send_message(msg)
-    else:  # STARTTLS
+    else:
         with smtplib.SMTP(host, port, timeout=30) as server:
             server.ehlo()
             server.starttls(context=ssl.create_default_context())
             server.login(user, password)
             server.send_message(msg)
 
-# ===== /contact =====
+# ========= /contact =========
 @app.post("/contact")
 async def contact(req: Request):
     data = await req.json()
@@ -85,9 +119,10 @@ Mensaje:
         send_email_smtp(subject=f"[MEDIAZION] {subject}", body=body, mail_from=mail_from, mail_to=mail_to)
         return {"ok": True}
     except Exception as e:
+        logger.error(f"[EMAIL] Error enviando correo: {e}")
         return {"ok": False, "error": str(e)}
 
-# ===== /news (agregador) =====
+# ========= /news (agregador) =========
 FEEDS: Dict[str, str] = {
     "BOE": "https://www.boe.es/rss/boe_es.php",
     "CGPJ": "https://www.poderjudicial.es/cgpj/es/Temas/Actualidad/rss/Actualidad",
@@ -189,8 +224,7 @@ async def refresh_news():
     _news_cache["ts"] = time.time()
     return {"ok": True, "count": len(_news_cache["items"])}
 
-# ===== Alta Mediadores (SQLite sencillo) =====
-
+# ========= Alta Mediadores (SQLite) =========
 DB_PATH = os.getenv("DB_PATH", "mediazion.db")
 
 def db():
@@ -223,10 +257,8 @@ async def mediador_register(req: Request):
     if len(name) < 2 or "@" not in email:
         raise HTTPException(status_code=400, detail="Nombre o email inválido.")
 
-    # generar contraseña aleatoria (12 chars)
-    password_plain = secrets.token_urlsafe(9)  # ~12 caracteres visibles
+    password_plain = secrets.token_urlsafe(9)  # ~12 chars
     password_hash = hash_pw(password_plain)
-
     try:
         conn = db()
         conn.execute(
@@ -238,7 +270,6 @@ async def mediador_register(req: Request):
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail="Ese email ya está registrado.")
 
-    # enviar email con credenciales
     mail_from = os.getenv("MAIL_FROM") or os.getenv("SMTP_USER")
     subject = "Tu acceso a MEDIAZION (Mediadores)"
     body = f"""Hola {name},
@@ -257,7 +288,7 @@ MEDIAZION
     try:
         send_email_smtp(subject=subject, body=body, mail_from=mail_from, mail_to=email)
     except Exception as e:
-        # Si el envío falla, devolvemos ok igualmente pero avisamos
+        logger.error(f"[EMAIL] No se pudo enviar el email automático: {e}")
         return {"ok": True, "warning": f"No se pudo enviar el email automático: {e}"}
 
     return {"ok": True}
