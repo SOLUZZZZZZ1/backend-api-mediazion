@@ -223,13 +223,16 @@ async def mediadores_register(req: Request):
 # Noticias (RSS + filtros + caché)
 # -----------------------------------------------------------------------------
 FEEDS = {
-    "BOE": "https://www.boe.es/rss/boe_es.php",
-    "CGPJ": "https://www.poderjudicial.es/cgpj/es/Temas/Actualidad/rss/Actualidad",
-    "MINISTERIO_JUSTICIA": "https://www.mjusticia.gob.es/es/actualidad/rss",
-    "EURLEX_DOUE": "https://eur-lex.europa.eu/rss/es/index.html",
-    "CONFILEGAL": "https://confilegal.com/feed/",
-    "LEGALTODAY": "https://www.legaltoday.com/feed/",
+  "BOE": "https://www.boe.es/rss/boe.xml",  # antes boe_es.php -> 404
+  # CGPJ: elige uno o varios de la página RSS oficial:
+  # Ejemplos (ajusta a tu preferencia):
+  # "CGPJ_TS": "https://www.poderjudicial.es/cgpj/es/Poder-Judicial/Tribunal-Supremo/Noticias-Judiciales/_.rss",
+  # "CGPJ_Noticias": "https://www.poderjudicial.es/cgpj/es/Poder-Judicial/Noticias-Judiciales/_.rss",
+  "CONFILEGAL": "https://confilegal.com/feed/",
+  "LEGALTODAY": "https://www.legaltoday.com/feed/",
+  # "EURLEX_DOUE": "..."  # comentar si da 404
 }
+
 KEYWORDS = ["mediación", "mediador", "adr", "resolución alternativa", "acuerdo", "conflicto"]
 _news_cache = {"items": [], "ts": 0}
 CACHE_TTL = int(os.getenv("NEWS_CACHE_TTL", "900"))
