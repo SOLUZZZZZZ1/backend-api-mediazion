@@ -1,62 +1,50 @@
-# news_routes.py — feed de actualidad para MEDIAZION
-from __future__ import annotations
-from fastapi import APIRouter, HTTPException, Query
-import time, os
-import httpx
-import feedparser
+# news_routes.py
+import os, time
+from typing import Optional, Dict, Any, List
+from fastapi import APIRouter
+import httpx, feedparser
 from dateutil import parser as dtparse
 
 news_router = APIRouter()
 
 FEEDS = {
     "CONFILEGAL": "https://confilegal.com/feed/",
-    "BOE": "https://www.boe.es/diario_boe/xml.php?id=BOE",
-    "BOE-BO": "https://www.boe.es/boe.atom",
+    "LEGALTODAY": "https://www.legaltoday.com/feed/",
+    "BOE": "https://www.boe.es/rss/boe.xml",
 }
-NEWS_CACHE = {"at": 0.0, "items": []}
-CACHE_TTL = int(os.getenv("NEWS_CACHE_TTL") or 900)
 
-async def _fetch(url: str):
+_CACHE = {"ts": 0.0, "items": []}
+CACHE_TTL = int(os.getenv("NEWS_CACHE_TTL", "900"))
+
+async def fetch(url: str) -> str:
     async with httpx.AsyncClient(timeout=20) as s:
-        r = await s.get(url)
-        r.raise_for_status()
+        r = await s.get(url); r.raise_for_status()
         return r.text
 
 @news_router.get("/news")
-async def news(
-    source: str | None = Query(default=None),
-    q: str | None = Query(default=None),
-    tag: str | None = Query(default=None)
-):
+async def news(source: Optional[str] = None, q: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
     now = time.time()
-    global NEWS_CACHE
-    if now - NEWS_CACHE["at"] > CACHE_TTL:
+    global _CACHE
+    if now - _CACHE["ts"] > CACHE_TTL or not _CACHE["items"]:
         items = []
         for name, url in FEEDS.items():
             try:
-                xml = await _fetch(url)
+                xml = await fetch(url)
                 feed = feedparser.parse(xml)
                 for e in feed.entries[:50]:
-                    title = e.get("title", "")
-                    summary = e.get("summary", "")
                     date = e.get("published") or e.get("updated")
-                    date_iso = dtparse.parse(date).strftime("%Y-%m-%d") if date else None
                     items.append({
                         "source": name,
-                        "title": title,
-                        "summary": summary,
-                        "date": date_iso,
-                        "url": e.get("link", "")
+                        "title": e.get("title",""),
+                        "summary": e.get("summary",""),
+                        "url": e.get("link",""),
+                        "date": (dtparse.parse(date).date().isoformat() if date else None)
                     })
             except Exception as ex:
-                print(f"[news] {name} error: {ex}")
-        # filtrar por query/tag opcional
-        if q:
-            ql = q.lower()
-            items = [it for it in items if ql in (it["title"] + " " + it["summary"]).lower()]
-        if source:
-            items = [it for it in items if it["source"].lower() == source.lower()]
-        # ordenar por fecha desc
-        items.sort(key=lambda z: z.get("date") or "", reverse=True)
-        NEWS_CACHE = {"at": now, "items": items}
-    return {"ok": True, "items": NEWS_CACHE["items"]}
+                print("[news]", name, ex)
+        items.sort(key=lambda x: x.get("date") or "", reverse=True)
+        _CACHE = {"ts": now, "items": items}
+    out = list(_CACHE["items"])
+    if source: out = [i for i in out if i["source"].lower() == source.lower()]
+    if q: out = [i for i in out if q.lower() in (i["title"]+" "+i["summary"]).lower()]
+    return out[:max(1, min(limit, 200))]

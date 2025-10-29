@@ -9,4 +9,5 @@ feedparser==6.0.11
 python-dateutil==2.9.0.post0
 stripe==13.0.0
 python-multipart==0.0.9
+openai>=1.37.0
 
