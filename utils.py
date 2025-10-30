@@ -1,20 +1,20 @@
-# utils.py
-import os, sqlite3, hashlib, smtplib, ssl
+# utils.py — utilidades comunes MEDIAZION
+import os, sqlite3, hashlib, ssl, smtplib
 from email.message import EmailMessage
 
 DB_PATH = os.getenv("DB_PATH", "mediazion.db")
 
+# --- conexión base ---
 def db():
-    return sqlite3.connect(DB_PATH, check_same_window=False) if hasattr(sqlite3, 'connect') else sqlite3.connect(DB_PATH)
+    # fix correcto (no "check_same_window")
+    return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 def sha256(s: str) -> str:
-    return hashlib.sha256(s.encode('utf-8')).hexdigest()
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 def ensure_db():
     con = db()
-    cur = con.cursor()
-    # Crea tabla con 11 columnas de datos + id
-    cur.execute("""
+    con.execute("""
         CREATE TABLE IF NOT EXISTS mediadores (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT,
@@ -27,30 +27,36 @@ def ensure_db():
             provincia TEXT,
             especialidad TEXT,
             web TEXT,
-            linkedin TEXT
+            linkedin TEXT,
+            photo_url TEXT,
+            cv_url TEXT,
+            is_subscriber INTEGER DEFAULT 0,
+            subscription_status TEXT DEFAULT '',
+            is_trial INTEGER DEFAULT 0,
+            trial_expires_at TEXT DEFAULT ''
         )
     """)
     con.commit()
     con.close()
 
-# ---------- Correo ----------
-MAIL_FROM = os.getenv("MAIL_FROM", "no-reply@mediazion.eu")
-SMTP_HOST = os.getenv("SMTP_HOST")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
-SMTP_USER = os.getenv("SMTP_USER")
-SMTP_PASS = os.getenv("SMTP_PASS") or os.getenv("SMTP_PASSWORD")
-
-def send_email(to_addr: str, subject: str, body: str) -> None:
-    if not SMTP_HOST or not SMTP_USER or not SMTP_PASS:
-        # Evita romper si el SMTP no está configurado
-        print(f"[send_email] (simulado) To: {to_addr} | Subj: {subject}\n{body}\n")
-        return
+# --- correo opcional ---
+def send_email(to: str, subject: str, body: str):
+    smtp_host = os.getenv("SMTP_HOST")
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+    if not all([smtp_host, smtp_user, smtp_pass]):
+        return False
     msg = EmailMessage()
-    msg['From'] = MAIL_FROM
-    msg['To'] = to_addr
-    msg['Subject'] = subject
+    msg["From"] = smtp_user
+    msg["To"] = to
+    msg["Subject"] = subject
     msg.set_content(body)
-    context = ssl.create_default_context()
-    with smtpless.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context) as s:
-        s.login(SMTP_USER, SMTP_PASS)
-        s.send_message(msg)
+    try:
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP_SSL(smtp_host, 465, context=ctx) as s:
+            s.login(smtp_user, smtp_pass)
+            s.send_message(msg)
+        return True
+    except Exception as e:
+        print("EMAIL ERROR:", e)
+        return False
