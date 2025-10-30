@@ -24,7 +24,14 @@ def list_mediadores(
     subscriber: Optional[int] = Query(None, ge=0, le=1),
 ) -> List[Dict[str, Any]]:
     conn = db()
-    sql = "SELECT id,name,email,status,created_at,telefono,provincia,bio,is_subscriber FROM mediadores WHERE 1=1"
+    sql = """
+      SELECT id,name,email,status,created_at,telefono,provincia,bio,
+             COALESCE(is_subscriber,0) AS is_subscriber,
+             COALESCE(subscription_status,'') AS subscription_status,
+             COALESCE(is_trial,0) AS is_trial,
+             trial_expires_at
+      FROM mediadores WHERE 1=1
+    """
     args = []
     if status:
         sql += " AND status=?"; args.append(status)
@@ -33,8 +40,8 @@ def list_mediadores(
         sql += " AND (name LIKE ? OR email LIKE ? OR IFNULL(bio,'') LIKE ?)"
         args += [like, like, like]
     if subscriber is not None:
-        sql += " AND is_subscriber=?"; args.append(int(subscriber))
-    sql += " ORDER BY datetime(created_at) DESC"
+        sql += " AND COALESCE(is_subscriber,0)=?"; args.append(int(subscriber))
+    sql += " ORDER BY datetime(COALESCE(created_at,'1970-01-01')) DESC"
     rows = conn.execute(sql, args).fetchall()
     conn.close()
     return [dict(r) for r in rows]

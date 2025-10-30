@@ -28,15 +28,14 @@ def get_current_user(authorization: Optional[str] = Header(default=None)) -> Dic
         SELECT s.expires_at, u.id, u.email, u.status
         FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?
     """, (token,)).fetchone()
-    if not row:
-        conn.close(); raise HTTPException(401, "Invalid token")
+    if not row: conn.close(); raise HTTPException(401, "Invalid token")
     if datetime.fromisoformat(row["expires_at"]) < datetime.utcnow():
         conn.execute("DELETE FROM sessions WHERE token=?", (token,)); conn.commit(); conn.close()
         raise HTTPException(401, "Session expired")
     conn.close()
     return {"id": row["id"], "email": row["email"], "status": row["status"]}
 
-# Gateo de acceso al panel: suscriptor activo o en trial vigente
+# Gateo de acceso al panel: suscriptor activo o trial vigente
 def has_active_access(email: str) -> bool:
     conn = db()
     row = conn.execute("""
@@ -55,7 +54,7 @@ def has_active_access(email: str) -> bool:
             return False
     return False
 
-# ---------- Alta de mediador ----------
+# ---------- Alta de mediador (FLEXIBLE: JSON o form-data) ----------
 class MediadorRegisterIn(BaseModel):
     name: str
     email: EmailStr
@@ -67,10 +66,38 @@ class MediadorRegisterIn(BaseModel):
     linkedin: Optional[str] = None
 
 @mediadores_router.post("/mediadores/register")
-def mediador_register(data: MediadorRegisterIn):
-    name = data.name.strip(); email = data.email.lower().strip()
-    if not name or not email:
-        raise HTTPException(400, "Missing data")
+async def mediador_register(request: Request):
+    """
+    Acepta:
+      - JSON: Content-Type: application/json
+      - Form-data: multipart/form-data o application/x-www-form-urlencoded
+    Devuelve error claro si falta name o email.
+    """
+    ctype = (request.headers.get("content-type") or "")
+    try:
+        if ctype.startswith("application/json"):
+            raw = await request.json()
+        else:
+            form = await request.form()
+            raw = dict(form)
+    except Exception:
+        raise HTTPException(400, "Body inválido")
+
+    # Normaliza claves
+    data = {
+        "name": (raw.get("name") or raw.get("nombre") or "").strip(),
+        "email": (raw.get("email") or "").strip().lower(),
+        "telefono": (raw.get("telefono") or "").strip(),
+        "bio": (raw.get("bio") or "").strip(),
+        "provincia": (raw.get("provincia") or "").strip(),
+        "especialidad": (raw.get("especialidad") or "").strip(),  # CSV opcional
+        "web": (raw.get("web") or "").strip(),
+        "linkedin": (raw.get("linkedin") or "").strip(),
+    }
+    if not data["name"] or not data["email"]:
+        raise HTTPException(422, "Faltan nombre o email")
+
+    # Password temporal y alta
     temp_pwd = secrets.token_urlsafe(10)
     pwd_hash = sha256(temp_pwd)
     created  = now_iso()
@@ -79,23 +106,28 @@ def mediador_register(data: MediadorRegisterIn):
         conn.execute("""
           INSERT INTO mediadores (name,email,password_hash,status,created_at,telefono,bio,provincia,especialidad,web,linkedin)
           VALUES (?,?,?,'pending',?,?,?,?,?,?)
-        """, (name, email, pwd_hash, created, data.telefono or "", data.bio or "", data.provincia or "",
-              data.especialidad or "", data.web or "", data.linkedin or ""))
+        """, (data["name"], data["email"], pwd_hash, created, data["telefono"], data["bio"],
+              data["provincia"], data["especialidad"], data["web"], data["linkedin"]))
         conn.execute("""
           INSERT OR IGNORE INTO users (email,password_hash,status,created_at)
           VALUES (?,?, 'pending', ?)
-        """, (email, pwd_hash, created))
+        """, (data["email"], pwd_hash, created))
         conn.commit()
     except Exception as ex:
-        conn.rollback(); raise HTTPException(400, f"Registration failed: {ex}")
+        conn.rollback(); raise HTTPException(400, f"No se pudo registrar: {ex}")
     finally:
         conn.close()
+
     # Email de acceso
     try:
-        send_email(email, "MEDIAZION · Acceso de mediador",
-                   f"Hola {name}\n\nUsuario: {email}\nContraseña temporal: {temp_pwd}\n\nPanel: https://mediazion.eu/panel-mediador\nEstado: PENDIENTE (en revisión)")
+        send_email(
+            data["email"],
+            "MEDIAZION · Acceso de mediador",
+            f"Hola {data['name']}\n\nUsuario: {data['email']}\nContraseña temporal: {temp_pwd}\n\nPanel: https://mediazion.eu/panel-mediador\nEstado: PENDIENTE"
+        )
     except Exception as e:
-        print("[email]", e)
+        print("[email] aviso:", e)
+
     return {"ok": True, "message": "Alta registrada. Revisa tu correo."}
 
 # ---------- Login ----------
@@ -143,7 +175,6 @@ def get_profile(user=Depends(get_current_user)):
     """, (user["email"],)).fetchone()
     conn.close()
     mediador = dict(m) if m else {}
-    # Access flags
     mediador["has_access"] = has_active_access(user["email"])
     return {"user": user, "mediador": mediador}
 
@@ -172,10 +203,11 @@ def update_profile(body: ProfileUpdateIn, user=Depends(get_current_user)):
     conn.close()
     return {"ok": True}
 
-# ---------- Uploads ----------
+# ---------- Uploads (photo, cv, doc para IA) ----------
 @mediadores_router.post("/upload/file")
 def upload_file(kind: str, file: UploadFile = File(...), user=Depends(get_current_user)):
-    if kind not in ("photo","cv"): raise HTTPException(400, "kind inválido")
+    if kind not in ("photo","cv","doc"):  # añadimos doc para IA
+        raise HTTPException(400, "kind inválido")
     uid = str(user["id"])
     folder = os.path.join("uploads", uid)
     os.makedirs(folder, exist_ok=True)
@@ -187,8 +219,15 @@ def upload_file(kind: str, file: UploadFile = File(...), user=Depends(get_curren
     with open(path, "wb") as f:
         f.write(file.file.read())
     url = f"/uploads/{uid}/{fname}"
-    col = "photo_url" if kind=="photo" else "cv_url"
-    conn = db(); conn.execute(f"UPDATE mediadores SET {col}=? WHERE email=?", (url, user["email"])); conn.commit(); conn.close()
+    col = "photo_url" if kind=="photo" else ("cv_url" if kind=="cv" else "doc_url")
+    # para doc_url, añadimos la columna si no existiera (idempotente)
+    conn = db()
+    try:
+        conn.execute("ALTER TABLE mediadores ADD COLUMN doc_url TEXT")
+    except Exception:
+        pass
+    conn.execute(f"UPDATE mediadores SET {col}=? WHERE email=?", (url, user["email"]))
+    conn.commit(); conn.close()
     return {"ok": True, "url": url}
 
 # ---------- Stripe con trial ----------
@@ -202,7 +241,7 @@ def stripe_client():
 
 class SubscribeIn(BaseModel):
     email: EmailStr
-    priceId: Optional[str] = None  # opcional si STRIPE_PRICE_ID en entorno
+    priceId: Optional[str] = None
 
 @mediadores_router.post("/subscribe")
 def subscribe(body: SubscribeIn):
@@ -215,7 +254,7 @@ def subscribe(body: SubscribeIn):
             payment_method_types=["card"],
             line_items=[{"price": price_id, "quantity": 1}],
             customer_email=body.email,
-            subscription_data={"trial_period_days": 7},  # ← trial de 7 días
+            subscription_data={"trial_period_days": 7},  # trial 7d
             allow_promotion_codes=True,
             success_url="https://mediazion.eu/suscripcion/ok",
             cancel_url="https://mediazion.eu/suscripcion/cancel",
@@ -238,7 +277,6 @@ async def webhook(req: Request):
     et = event.get("type")
     data = event.get("data",{}).get("object",{})
 
-    # Al completar Checkout (suscripción creada con trial)
     if et == "checkout.session.completed":
         email = data.get("customer_email") or (data.get("customer_details") or {}).get("email")
         if email:
@@ -249,7 +287,7 @@ async def webhook(req: Request):
               SET subscription_status='trialing', is_trial=1, trial_expires_at=?, is_subscriber=0
               WHERE email=?
             """, (expires, email.lower()))
-            # Asegura usuario
+            # asegura user
             row = conn.execute("SELECT id FROM users WHERE email=?", (email.lower(),)).fetchone()
             if not row:
                 conn.execute("INSERT INTO users (email,password_hash,status,created_at) VALUES (?,?,?,?)",
@@ -257,67 +295,21 @@ async def webhook(req: Request):
             conn.commit(); conn.close()
         return {"received": True}
 
-    # Primer cobro al finalizar trial
-    if et == "invoice.paid":
-        sub = data.get("subscription")
-        cust = data.get("customer")
-        # No siempre llega email aquí; marcamos por customer_email si viene en `billing_reason == 'subscription_cycle'`
-        # Reforzamos en customer.subscription.updated también.
-        return {"received": True}
-
-    # Cambio de estado de suscripción
     if et == "customer.subscription.updated":
-        status = data.get("status")            # trialing | active | past_due | canceled | ...
-        cust_id = data.get("customer")
-        # Buscar email asociado (si lo guardas, puedes mapear por tabla; aquí simplificamos por webhook previo)
-        # Como simplificación: marcamos 'active' si status==active
-        if status in ("active","trialing","past_due","canceled","unpaid"):
-            # En un sistema real mapear por customer_id→email (guardado en alta o en sesión de Checkout)
-            # Aquí lo dejamos como pattern básico: si pasó a active, marca is_subscriber=1 y is_trial=0
-            conn = db()
-            if status == "active":
-                conn.execute("""
-                  UPDATE mediadores
-                  SET subscription_status='active', is_subscriber=1, is_trial=0
-                  WHERE is_trial=1 OR is_subscriber=0
-                """)
-            elif status == "canceled":
-                conn.execute("""
-                  UPDATE mediadores
-                  SET subscription_status='canceled', is_subscriber=0, is_trial=0
-                """)
-            else:
-                conn.execute("UPDATE mediadores SET subscription_status=?", (status,))
-            conn.commit(); conn.close()
+        status = data.get("status")            # trialing|active|canceled|...
+        conn = db()
+        if status == "active":
+            conn.execute("""
+              UPDATE mediadores SET subscription_status='active', is_subscriber=1, is_trial=0
+              WHERE subscription_status!='active'
+            """)
+        elif status == "canceled":
+            conn.execute("""
+              UPDATE mediadores SET subscription_status='canceled', is_subscriber=0, is_trial=0
+            """)
+        else:
+            conn.execute("UPDATE mediadores SET subscription_status=?", (status,))
+        conn.commit(); conn.close()
         return {"received": True}
 
     return {"received": True}
-
-# ---------- Recordatorio 48 h antes de fin de trial (para cron) ----------
-@mediadores_router.post("/admin/trial-reminders")
-def trial_reminders(admin_key: Optional[str] = Header(default=None)):
-    # Seguridad muy básica: header 'admin_key' debe coincidir con ADMIN_TOKEN
-    if admin_key != os.getenv("ADMIN_TOKEN"):
-        raise HTTPException(401, "Unauthorized")
-    now = datetime.utcnow()
-    in_48h = (now + timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%S")
-    conn = db()
-    rows = conn.execute("""
-      SELECT name,email,trial_expires_at FROM mediadores
-      WHERE is_trial=1 AND trial_expires_at IS NOT NULL
-    """).fetchall()
-    count = 0
-    for r in rows:
-        try:
-            exp = datetime.fromisoformat(r["trial_expires_at"])
-            if 0 <= (exp - now).total_seconds() <= 48*3600:
-                send_email(
-                    r["email"],
-                    "MEDIAZION · Tu periodo de prueba finaliza pronto",
-                    f"Hola {r['name']}\n\nTu periodo de prueba termina el {r['trial_expires_at']}.\nSi quieres mantener el acceso, confirma tu suscripción en el panel."
-                )
-                count += 1
-        except Exception:
-            pass
-    conn.close()
-    return {"ok": True, "reminders": count}
