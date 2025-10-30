@@ -1,4 +1,4 @@
-# mediadores_routes.py — alta/login/perfil/uploads + Stripe con trial 7 días
+# mediadores_routes.py — alta/login/perfil/uploads + Stripe con trial 7 días (robusto form/JSON)
 import os, secrets, json, time
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
@@ -35,7 +35,7 @@ def get_current_user(authorization: Optional[str] = Header(default=None)) -> Dic
     conn.close()
     return {"id": row["id"], "email": row["email"], "status": row["status"]}
 
-# Gateo de acceso al panel: suscriptor activo o trial vigente
+# Gateo: suscriptor activo o trial vigente
 def has_active_access(email: str) -> bool:
     conn = db()
     row = conn.execute("""
@@ -54,47 +54,50 @@ def has_active_access(email: str) -> bool:
             return False
     return False
 
-# ---------- Alta de mediador (FLEXIBLE: JSON o form-data) ----------
-class MediadorRegisterIn(BaseModel):
-    name: str
-    email: EmailStr
-    telefono: Optional[str] = None
-    bio: Optional[str] = None
-    provincia: Optional[str] = None
-    especialidad: Optional[str] = None  # CSV
-    web: Optional[str] = None
-    linkedin: Optional[str] = None
+# ---------- Alta de mediador (robusta: JSON o FORM) ----------
+def _get_str(raw: Dict[str, Any], key: str) -> str:
+    """Devuelve valor string normalizado desde raw (acepta list/None)."""
+    v = raw.get(key, "")
+    if isinstance(v, list):  # starlette FormData puede devolver listas
+        v = v[0] if v else ""
+    if v is None:
+        v = ""
+    return str(v).strip()
 
 @mediadores_router.post("/mediadores/register")
 async def mediador_register(request: Request):
     """
     Acepta:
-      - JSON: Content-Type: application/json
-      - Form-data: multipart/form-data o application/x-www-form-urlencoded
-    Devuelve error claro si falta name o email.
+      - JSON: application/json
+      - Form: multipart/form-data o application/x-www-form-urlencoded
     """
-    ctype = (request.headers.get("content-type") or "")
+    ctype = (request.headers.get("content-type") or "").lower()
     try:
         if ctype.startswith("application/json"):
             raw = await request.json()
-        else:
+        elif ctype.startswith("multipart/") or ctype.startswith("application/x-www-form-urlencoded"):
             form = await request.form()
             raw = dict(form)
+        else:
+            # fallback: intentar json
+            try:
+                raw = await request.json()
+            except Exception:
+                form = await request.form()
+                raw = dict(form)
     except Exception:
-        raise HTTPException(400, "Body inválido")
+        raise HTTPException(400, "Cuerpo de solicitud inválido")
 
-    # Normaliza claves
-    data = {
-        "name": (raw.get("name") or raw.get("nombre") or "").strip(),
-        "email": (raw.get("email") or "").strip().lower(),
-        "telefono": (raw.get("telefono") or "").strip(),
-        "bio": (raw.get("bio") or "").strip(),
-        "provincia": (raw.get("provincia") or "").strip(),
-        "especialidad": (raw.get("especialidad") or "").strip(),  # CSV opcional
-        "web": (raw.get("web") or "").strip(),
-        "linkedin": (raw.get("linkedin") or "").strip(),
-    }
-    if not data["name"] or not data["email"]:
+    name        = _get_str(raw, "name") or _get_str(raw, "nombre")
+    email       = _get_str(raw, "email").lower()
+    telefono    = _get_str(raw, "telefono")
+    bio         = _get_str(raw, "bio")
+    provincia   = _get_str(raw, "provincia")
+    especialidad= _get_str(raw, "especialidad")  # CSV opcional
+    web         = _get_str(raw, "web")
+    linkedin    = _get_str(raw, "linkedin")
+
+    if not name or not email:
         raise HTTPException(422, "Faltan nombre o email")
 
     # Password temporal y alta
@@ -106,12 +109,11 @@ async def mediador_register(request: Request):
         conn.execute("""
           INSERT INTO mediadores (name,email,password_hash,status,created_at,telefono,bio,provincia,especialidad,web,linkedin)
           VALUES (?,?,?,'pending',?,?,?,?,?,?)
-        """, (data["name"], data["email"], pwd_hash, created, data["telefono"], data["bio"],
-              data["provincia"], data["especialidad"], data["web"], data["linkedin"]))
+        """, (name, email, pwd_hash, created, telefono, bio, provincia, especialidad, web, linkedin))
         conn.execute("""
           INSERT OR IGNORE INTO users (email,password_hash,status,created_at)
           VALUES (?,?, 'pending', ?)
-        """, (data["email"], pwd_hash, created))
+        """, (email, pwd_hash, created))
         conn.commit()
     except Exception as ex:
         conn.rollback(); raise HTTPException(400, f"No se pudo registrar: {ex}")
@@ -121,9 +123,9 @@ async def mediador_register(request: Request):
     # Email de acceso
     try:
         send_email(
-            data["email"],
+            email,
             "MEDIAZION · Acceso de mediador",
-            f"Hola {data['name']}\n\nUsuario: {data['email']}\nContraseña temporal: {temp_pwd}\n\nPanel: https://mediazion.eu/panel-mediador\nEstado: PENDIENTE"
+            f"Hola {name}\n\nUsuario: {email}\nContraseña temporal: {temp_pwd}\n\nPanel: https://mediazion.eu/panel-mediador\nEstado: PENDIENTE"
         )
     except Exception as e:
         print("[email] aviso:", e)
@@ -204,9 +206,10 @@ def update_profile(body: ProfileUpdateIn, user=Depends(get_current_user)):
     return {"ok": True}
 
 # ---------- Uploads (photo, cv, doc para IA) ----------
+from fastapi import UploadFile
 @mediadores_router.post("/upload/file")
 def upload_file(kind: str, file: UploadFile = File(...), user=Depends(get_current_user)):
-    if kind not in ("photo","cv","doc"):  # añadimos doc para IA
+    if kind not in ("photo","cv","doc"):
         raise HTTPException(400, "kind inválido")
     uid = str(user["id"])
     folder = os.path.join("uploads", uid)
@@ -220,7 +223,6 @@ def upload_file(kind: str, file: UploadFile = File(...), user=Depends(get_curren
         f.write(file.file.read())
     url = f"/uploads/{uid}/{fname}"
     col = "photo_url" if kind=="photo" else ("cv_url" if kind=="cv" else "doc_url")
-    # para doc_url, añadimos la columna si no existiera (idempotente)
     conn = db()
     try:
         conn.execute("ALTER TABLE mediadores ADD COLUMN doc_url TEXT")
@@ -230,7 +232,7 @@ def upload_file(kind: str, file: UploadFile = File(...), user=Depends(get_curren
     conn.commit(); conn.close()
     return {"ok": True, "url": url}
 
-# ---------- Stripe con trial ----------
+# ---------- Stripe con trial 7d ----------
 import stripe as _stripe
 
 def stripe_client():
@@ -254,7 +256,7 @@ def subscribe(body: SubscribeIn):
             payment_method_types=["card"],
             line_items=[{"price": price_id, "quantity": 1}],
             customer_email=body.email,
-            subscription_data={"trial_period_days": 7},  # trial 7d
+            subscription_data={"trial_period_days": 7},
             allow_promotion_codes=True,
             success_url="https://mediazion.eu/suscripcion/ok",
             cancel_url="https://mediazion.eu/suscripcion/cancel",
