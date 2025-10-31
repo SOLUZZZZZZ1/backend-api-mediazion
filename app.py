@@ -1,79 +1,76 @@
-# app.py — MEDIAZION Backend (FastAPI)
+# app.py
 import os
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import APIRouter
 from pydantic import BaseModel, EmailStr
-from typing import Optional
-from utils import ensure_db, send_email
-from admin_routes import router as admin_router
-from mediadores_routes import router as mediadores_router
-from news_routes import router as news_router
+import uvicorn
 
-# Inicializar app
-app = FastAPI(title="MEDIAZION Backend", version="1.0.0")
+try:
+    import stripe  # pip install stripe
+except Exception:
+    stripe = None
 
-# CORS
-default_origins = "https://mediazion.eu,https://www.mediazion.eu,https://*.vercel.app,http://localhost:3000,http://localhost:5173"
-origins = [o.strip() for o in (os.getenv("ALLOWED_ORIGINS", default:last) if (last := default_origins) else default_origins).split(",")]
+# --- Configuración básica ---
+DEFAULT_ALLOWED = "https://mediazion.eu,https://www.mediazion.eu"
+ALLOWED_ORIGINS = [o.strip() for o in (os.getenv("ALLOWED_ORIGINS") or DEFAULT_ALLOWED).split(",") if o.strip()]
+
+STRIPE_SECRET = os.getenv("STRIPE_SECRET") or os.getenv("STRIPE_SECRET_KEY") or ""
+if stripe and STRIPE_SECRET:
+    stripe.api_key = STRIPE_SECRET
+
+app = FastAPI(title="MEDIAZION API", version="0.1.0")
 
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
+    CORSMBWF := CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Inicializar BD
-ensure yeah = ensure_db()
-
-# Rutas básicas
-@app.get("/")
-def root():
-    return {"ok": True, "service": "mediazion-backend"}
-
-# Contacto
+# --- Modelos básicos ---
 class ContactIn(BaseModel):
-    name: Optional[str] = ""
+    name: str
     email: EmailStr
-    subject: Optional[str] = "Contacto desde web"
+    subject: str | None = None
     message: str
+
+class SubscribeIn(BaseModel):
+    email: EmailStr
+    priceId: str
+
+# --- Rutas básicas ---
+@app.get("/health")
+def health():
+    return {"ok": True, "service": "mediazion-backend"}
 
 @app.post("/contact")
 async def contact(payload: ContactIn):
-    to_addr = os.getenv("MAIL_TO") or os.getenv("MAIL_FROM")
-    if not to_addr:
-        raise HTTPException(500, detail="MAIL_TO o MAIL_FROM no configurado")
-    # Enviar a MEDIAZION y acuse al remitente
-    body_admin = (
-        f"Nuevo mensaje de contacto:\n\n"
-        f"Nombre: {payload.name}\n"
-        f"Email: {payload.email}\n\n"
-        f"Mensaje:\n{payload.message}\n"
-    )
-    try:
-        send_email(
-            to=to_addr,
-            subject=f"[MEDIAZION] {payload.subject}",
-            body=body_admin,
-            cc=os.getenv("MAIL_BCC"),
-        )
-        # Acuse al usuario
-        send_email(
-            to=str(payload.email),
-            subject="Hemos recibido tu consulta",
-            body=(
-                f"Hola {payload.name or ''}\n\n"
-                "Gracias por contactar con MEDIAZION. Hemos recibido tu mensaje y te responderemos en breve.\n\n"
-                "Un saludo,\nEquipo MEDIAZION"
-            ),
-        )
-    except Exception as e:
-        # No tumbamos la API si falla el SMTP
-        print("Email error:", e)
-    return {"ok": True}
+    # Aquí envías e-mail vía SMTP real o un servicio (Mailgun/Sendgrid/etc.)
+    # De momento devolvemos OK para que tu frontend funcione.
+    return {"ok": True, "received": payload.dict()}
 
-# Routers
-app.include_router(admin_router, prefix="/admin", tags=["admin"])
-app.include_router(mediadores_router, tags=["mediadores"])
-app.include_router(news_router, tags=["news"])
+@app.post("/subscribe")
+async def subscribe(data: SubscribeIn):
+    if not stripe or not STRIPE_SECRET:
+        raise HTTPException(status_code=500, detail="STRIPE_SECRET no configurada o lib stripe no instalada")
+
+    try:
+        session = stripe.checkout.Session.create(
+            mode="subscription",
+            payment_method_types=["card"],
+            line_items=[{
+                "price": data.priceId,
+                "quantity": 1,
+            }],
+            success_url="https://mediazion.eu/suscripcion/ok",
+            cancel_url="https://mediazion.eu/suscripcion/cancel",
+            customer_creation="always",
+        )
+        return {"ok": True, "url": session.url}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+if __name__ == "__main__":
+    uvicorn.run("app:app", host="0.0.0.0", port=int(os.getenv("PORT", "10000")), reload=False)
