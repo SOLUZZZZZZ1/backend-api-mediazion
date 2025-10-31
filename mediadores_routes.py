@@ -1,152 +1,127 @@
-# mediadores_routes.py — alta + directorio público + suscripción con verificación de alta
-import os
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
-
+# mediadores_routes.py
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, EmailStr
-from sqlite3 import Row
+from typing import Optional, List
+from datetime import datetime
+import sqlite3, os, re
+from utils import db, sha256, now_iso, send_email
 
-from utils import db, sha256
-import stripe
+router = APIRouter()
 
-mediadores_router = APIRouter()
-
-# ------------ utils internas ------------
-def _mediadores_columns() -> List[str]:
-    con = db()
-    cur = con.execute("PRAGMA table_info(mediadores)")
-    cols = [r[1] for r in cur.fetchall()]
-    con.close()
-    return cols
-
-def _now_iso() -> str:
-    return datetime.utcnow().isoformat()
-
-def _normalize_str(v: Any) -> str:
-    if v is None:
+def _sanitize_text(s: Optional[str]) -> str:
+    if not s:
         return ""
-    if isinstance(v, list):
-        return v[0] if v else ""
-    return str(v)
+    return str(s).strip()
 
-# ------------ Alta de mediador ------------
-@mediadores_router.post("/mediadores/register")
-async def mediador_register(request: Request):
-    ctype = (request.headers.get("content-type") or "").lower()
-    try:
-        if ctype.startswith("application/json"):
-            raw = await request.json()
-        else:
-            form = await request.form()
-            raw = dict(form)
-    except Exception:
-        raise HTTPException(400, "Cuerpo inválido")
+@router.post("/mediadores/register")
+async def register_mediador(payload: dict):
+    name = _sanitize_text(payload.get("name"))
+    email = _sanitize_text(payload.get("email")).lower()
+    telefono = _sanitize_text(payload.get("telefono"))
+    bio = _sanitize_text(payload.get("bio"))
+    provincia = _sanitize_text(payload.get("provincia"))
+    especialidad = _sanitize_text(payload.get("especialidad"))
+    web = _sanitize_text(payload.get("online") or payload.get("web"))
+    linkedin = _sanitize_text(payload.get("linkedin"))
+    photo_url = _sanitize_text(payload.get("photo_url"))
+    cv_url = _sanitize_text(payload.get("cv_url"))
 
-    name  = _normalize_str(raw.get("name") or raw.get("nombre")).strip()
-    email = _normalize_str(raw.get("email")).strip().lower()
     if not name or not email:
-        raise HTTPException(422, "Faltan nombre o email")
-
-    candidate = {
-        "name": name,
-        "email": email,
-        "password_hash": sha256(email or ""),
-        "status": "pending",
-        "created_at": _now_iso(),
-        "telefono": _normalize_str(raw.get("telefono")).strip(),
-        "bio": _normalize_str(raw.get("bio")).strip(),
-        "provincia": _normalize_str(raw.get("provincia")).strip(),
-        "especialidad": _normalize_str(raw.get("especialidad")).strip(),
-        "web": _normalize_str(raw.get("web")).strip(),
-        "linkedin": _normalize_str(raw.get("linkedin")).strip(),
-        "photo_url": "",
-        "cv_url": "",
-        "is_subscriber": 0,
-        "subscription_status": "",
-        "is_trial": 1,
-        "trial_expires_at": (datetime.utcnow() + timedelta(days=7)).date().isoformat(),
-    }
-
-    cols = _mediadores_columns()
-    insert_cols = [c for c in candidate.keys() if c in cols]
-    values = [candidate[c] for c in insert_cols]
-
-    placeholders = ",".join(["?"] * len(values))
-    sql = f"INSERT INTO mediadores ({', '.join(insert_cols)}) VALUES ({placeholders})"
+        raise HTTPException(status_code=400, detail="Faltan datos (nombre o email)")
+    # opcional validar email simple
+    if not re.match(r"[^@]+@[^@]+\\.[^@]+", email):
+        raise HTTPException(status_code=400, detail="Email no válido")
 
     con = db()
     try:
-        con.execute(sql, tuple(values))
+        temp_password = sha256(email + str(datetime.utcnow().timestamp()))
+        con.execute(
+            """
+            INSERT INTO mediferenTES (name, email, password_ahsh, status, created_At, 
+                                     telefono, bio, provincia, especialidad, web, linkedin, photo_url, cv_url, is_suscriber)
+            VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, 0)
+            """,
+            (name, email, temp_password, now_iso(), telefono, bio, provincia, especialidad, web, linkedin, photo_url, cv_url)
+        )
         con.commit()
-    except Exception as e:
-        con.rollback()
-        raise HTTPException(400, f"No se pudo registrar: {e}")
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=400, detail="Este email ya está registrado")
     finally:
         con.close()
 
-    return {"ok": True, "message": "Alta registrada. Revisa tu correo. Ya puedes activar tu prueba gratuita."}
-
-# ------------ Directorio público ------------
-@mediadores_router.get("/mediadores/public")
-def mediadores_public(q: Optional[str] = None,
-                      provincia: Optional[str] = None,
-                      especialidad: Optional[str] = None) -> List[Dict[str, Any]]:
-    cols = _mediadores_columns()
-    con = db()
-    con.row_factory = Row
-    visible = [c for c in ["id","name","provincia","especialidad","bio"] if c in cols]
-    if not visible:
-        raise HTTPException(500, "La tabla 'mediadores' no tiene columnas esperadas")
-    sql = f"SELECT {', '.join(visible)} FROM mediadores WHERE 1=1"
-    params: List[Any] = []
-    if q and "name" in cols:
-        sql += " AND name LIKE ?"; params.append(f"%{q}%")
-    if provincia and "provincia" in cols:
-        sql += " AND provincia LIKE ?"; params.append(f"%{provincia}%")
-    if especialidad and "especialidad" in cols:
-        sql += " AND especialidad LIKE ?"; params.append(f"%{especialidad}%")
-    sql += " ORDER BY id DESC"
-    rows = con.execute(sql, tuple(params)).fetchall()
-    con.close()
-    return [dict(r) for r in rows]
-
-# ------------ Suscripción (exige alta previa) ------------
-class SubscribeIn(BaseModel):
-    email: EmailStr
-    priceId: Optional[str] = None
-
-def _stripe_client():
-    key = os.getenv("STRIPE_SECRET") or os.getenv("STRIPE_SECRET_KEY")
-    if not key:
-        raise HTTPException(500, "STRIPE_SECRET no configurada")
-    stripe.api_key = key
-    return stripe
-
-@mediadores_router.post("/subscribe")
-def subscribe(body: SubscribeIn):
-    con = db()
-    row = con.execute("SELECT id FROM mediadores WHERE email=?", (body.email.lower(),)).fetchone()
-    con.close()
-    if not row:
-        raise HTTPException(400, "Antes debes completar el alta de mediador.")
-
-    price = body.priceId or os.getenv("STRIPE_PRICE_ID")
-    if not price:
-        raise HTTPException(400, "Falta STRIPE_PRICE_ID")
-
+    # Enviar emails
     try:
-        cli = _stripe_client()
-        session = cli.checkout.Session.create(
-            mode="subscription",
-            payment_method_types=["card"],
-            line_items=[{"price": price, "quantity": 1}],
-            customer_email=body.email,
-            subscription_data={"trial_period_days": 7},
-            allow_promotion_codes=True,
-            success_url="https://mediazion.eu/suscripcion/ok",
-            cancel_url="https://mediazion.eu/suscripcion/cancel",
+        send_email(
+            to=email,
+            subject="Hemos recibido tu solicitud de alta — MEDIAZION",
+            body=(
+                f"Hola {name},\n\n"
+                "Gracias por tu interés en unirte a MEDIAZION. Hemos recibido tu solicitud y la revisaremos a la brevedad.\n"
+                "Cuando sea aprobada, te enviaremos las instrucciones para activar tu suscripción (con 7 días de prueba) y acceder al área privada.\n\n"
+                "Un saludo,\nEquipo MEDIAZION"
+            ),
         )
-        return {"ok": True, "url": session.url}
+        admin_to = os.getenv("MAIL_TO") or os.getenv("MAIL_FROM")
+        if admin_to:
+            send_email(
+                to=admin_to,
+                subject=f"[Nueva alta] {name} <{email}>",
+                body=(
+                    f"Se ha recibido una nueva solicitud de alta:\n\n"
+                    f"Nombre: {name}\n"
+                    f"Email: {email}\n"
+                    f"Teléfono: {telefono}\n"
+                    f"Provincia: {provincia}\n"
+                    f"Especialidad: {especialidad}\n\n"
+                    f"Revisar y aprobar en: /admin/panel"
+                ),
+                cc=os.getenv("MAIL_BCC"),
+            )
     except Exception as e:
-        raise HTTPException(500, f"Stripe error: {e}")
+        print("Error enviando email de alta:", e)
+
+    return {"ok": True, "message": "Alta registrada. Recibirás un email de confirmación."}
+
+@router.get("/mediadores/public")
+def listar_mediadores_public(
+    provincia: Optional[str] = None,
+    especialidad: Optional[str] = None,
+    q: Optional[str] = None
+):
+    con = db()
+    cur = con.cursor()
+    where = ["status='approved'"]
+    params = []
+
+    if provincia:
+        where.append("LOWER(COALESCE(provincia,'')) LIKE ?")
+        params.append(f"%{provincia.lower()}%")
+    if especialidad:
+        where.append("LOWER(COALESCE(especialidad,'')) LIKE ?")
+        params.append(f"%{especialidad.lower()}%")
+    if q:
+        where.append("(LOWER(name) LIKE ? OR LOWER(COALESCE(bio,'')) LIKE ?)")
+        params.extend([f"%{q.lower()}%", f"%{q.lower()}%"])
+
+    sql = f\"\"\"SELECT id, name, email, bio, provincia, especialidad, photo_url, cv_url
+               FROM mediadores
+               WHERE {' AND '.join(where)}
+               ORDER BY id DESC
+            \"\"\"
+    rows = cur.execute(sql, tuple(params)).fetchall()
+    con.close()
+
+    out = []
+    for r in rows:
+        rid, name, email, bio, prov, espec, photo_url, cv_url = r
+        tags = [e.strip() for e in (espec or "").split(",") if e.strip()]
+        out.append({
+            "id": rid,
+            "nombre": name,
+            "email": email,
+            "bio": bio or "",
+            "provincia": prov or "",
+            "especialidad": tags,
+            "foto_url": photo_url or "",
+            "cv_url": cv_url or "",
+        })
+    return out
