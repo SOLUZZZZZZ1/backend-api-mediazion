@@ -1,54 +1,40 @@
-# app.py — MEDIAZION backend bootstrap
+# app.py — MEDIAZION Backend (estable)
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.staticfiles import StaticFiles
 
-# --- CORS: orígenes permitidos ---
-DEFAULT_ALLOWED = ["https://mediazion.eu", "https://www.mediazion.eu"]
-_env = os.getenv("ALLOWED_ORIGINS", "")
-ALLOWED_ORIGINS = [o.strip() for o in _env.split(",") if o.strip()] or DEFAULT_ALLOWED
+from utils import ensure_db
+from mediadores_routes import mediadores_router
+from admin_routes import admin_router
+from news_routes import news_router
+
+def parse_origins():
+    raw = os.getenv("ALLOWED_ORIGINS", "https://mediazion.eu,https://www.mediazion.eu")
+    return [o.strip() for o in raw.split(",") if o.strip()]
 
 app = FastAPI(title="MEDIAZION Backend", version="3.1.0")
 
+# DB ready
+ensure_db()
+
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=parse_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- Routers opcionales: si alguno no existe, no rompe el arranque ---
-def _try_include(router_import, prefix: str = "", tags=None):
-    try:
-        router = router_import()
-        if router:
-            app.include_router(router, prefix=prefix, tags=tags or [])
-    except Exception as e:
-        # No frenamos el arranque por un router — revisa logs en Render
-        print(f"[WARN] No se cargó router {router_import.__name__}: {e}")
+# Static uploads
+os.makedirs("uploads", exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
-# Wrappers ligeros para importar routers sólo si están
-def _admin_router():
-    from admin_routes import admin_router
-    return admin_router
-
-def _mediadores_router():
-    from mediadores_routes import mediadores_router
-    return mediadores_router
-
-def _news_router():
-    from news_routes import news_router
-    return news_router
-
-def _ai_router():
-    from ai_routes import ai_router
-    return ai_router
-
-_try_include(_admin_router, prefix="/admin", tags=["admin"])
-_try_include(_mediadores_router, prefix="", tags=["mediadores"])
-_try_include(_news_router, prefix="", tags=["news"])
-_try_include(_ai_router, prefix="/ai", tags=["ai"])
+# Routers
+app.include_router(mediadores_router, prefix="", tags=["mediadores"])
+app.include_router(admin_router,      prefix="/admin", tags=["admin"])
+app.include_router(news_router,       prefix="", tags=["news"])
 
 @app.get("/health")
 def health():

@@ -1,127 +1,147 @@
-# mediadores_routes.py
+# mediadores_routes.py — alta + directorio + suscripción
+import os
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
+
 from fastapi import APIRouter, HTTPException, Request
-from typing import Optional, List
-from datetime import datetime
-import sqlite3, os, re
-from utils import db, sha256, now_iso, send_email
+from sqlite3 import Row
+from utils import db, sha256, now_iso, send_mail
 
-router = APIRouter()
+mediadores_router = APIRouter()
 
-def _sanitize_text(s: Optional[str]) -> str:
-    if not s:
-        return ""
-    return str(s).strip()
+def _cols() -> List[str]:
+    con = db(); cur = con.execute("PRAGMA table_info(mediadores)")
+    cols = [r[1] for r in cur.fetchall()]; con.close()
+    return cols
 
-@router.post("/mediadores/register")
-async def register_mediador(payload: dict):
-    name = _sanitize_text(payload.get("name"))
-    email = _sanitize_text(payload.get("email")).lower()
-    telefono = _sanitize_text(payload.get("telefono"))
-    bio = _sanitize_text(payload.get("bio"))
-    provincia = _sanitize_text(payload.get("provincia"))
-    especialidad = _sanitize_text(payload.get("especialidad"))
-    web = _sanitize_text(payload.get("online") or payload.get("web"))
-    linkedin = _sanitize_text(payload.get("linkedin"))
-    photo_url = _sanitize_text(payload.get("photo_url"))
-    cv_url = _sanitize_text(payload.get("cv_url"))
+def _norm(v: Any) -> str:
+    if v is None: return ""
+    return str(v).strip()
 
+@mediadores_router.post("/mediadores/register")
+async def mediador_register(request: Request):
+    ctype = (request.headers.get("content-type") or "").lower()
+    try:
+        raw = await request.json() if ctype.startswith("application/json") else dict(await request.form())
+    except Exception:
+        raise HTTPException(400, "Cuerpo inválido")
+
+    name  = _norm(raw.get("name") or raw.get("nombre"))
+    email = _norm(raw.get("email")).lower()
     if not name or not email:
-        raise HTTPException(status_code=400, detail="Faltan datos (nombre o email)")
-    # opcional validar email simple
-    if not re.match(r"[^@]+@[^@]+\\.[^@]+", email):
-        raise HTTPException(status_code=400, detail="Email no válido")
+        raise HTTPException(422, "Faltan nombre o email")
+
+    cand: Dict[str, Any] = {
+        "name": name,
+        "email": email,
+        "password_hash": sha256(email),
+        "status": "pending",
+        "created_at": now_iso(),
+        "telefono": _norm(raw.get("telefono")),
+        "bio": _norm(raw.get("bio")),
+        "provincia": _norm(raw.get("provincia")),
+        "especialidad": _norm(raw.get("especialidad")),
+        "web": _norm(raw.get("web")),
+        "linkedin": _norm(raw.get("linkedin")),
+        "photo_url": "",
+        "cv_url": "",
+        "is_subscriber": 0,
+        "subscription_status": "",
+        "is_trial": 0,
+        "trial_expires_at": ""
+    }
+    cols = _cols()
+    insert_cols = [c for c in cand if c in cols]
+    values = [cand[c] for c in insert_cols]
 
     con = db()
     try:
-        temp_password = sha256(email + str(datetime.utcnow().timestamp()))
-        con.execute(
-            """
-            INSERT INTO mediferenTES (name, email, password_ahsh, status, created_At, 
-                                     telefono, bio, provincia, especialidad, web, linkedin, photo_url, cv_url, is_suscriber)
-            VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, 0)
-            """,
-            (name, email, temp_password, now_iso(), telefono, bio, provincia, especialidad, web, linkedin, photo_url, cv_url)
-        )
-        con.commit()
-    except sqlite3.IntegrityError:
-        raise HTTPException(status_code=400, detail="Este email ya está registrado")
+        placeholders = ",".join(["?"]*len(values))
+        sql = f"INSERT INTO mediadores ({', '.join(insert_cols)}) VALUES ({placeholders})"
+        con.execute(sql, tuple(values)); con.commit()
+    except Exception as e:
+        con.rollback()
+        raise HTTPException(400, f"No se pudo registrar: {e}")
     finally:
         con.close()
 
-    # Enviar emails
+    # emails
+    body_user = (
+        f"Hola {name},\n\n"
+        "Hemos recibido tu alta como mediador en MEDIAZION.\n"
+        "En breve revisaremos tus datos. Mientras tanto, puedes activar tu prueba PRO de 7 días desde la web.\n\n"
+        "— MEDIAZION"
+    )
     try:
-        send_email(
-            to=email,
-            subject="Hemos recibido tu solicitud de alta — MEDIAZION",
-            body=(
-                f"Hola {name},\n\n"
-                "Gracias por tu interés en unirte a MEDIAZION. Hemos recibido tu solicitud y la revisaremos a la brevedad.\n"
-                "Cuando sea aprobada, te enviaremos las instrucciones para activar tu suscripción (con 7 días de prueba) y acceder al área privada.\n\n"
-                "Un saludo,\nEquipo MEDIAZION"
-            ),
-        )
-        admin_to = os.getenv("MAIL_TO") or os.getenv("MAIL_FROM")
-        if admin_to:
-            send_email(
-                to=admin_to,
-                subject=f"[Nueva alta] {name} <{email}>",
-                body=(
-                    f"Se ha recibido una nueva solicitud de alta:\n\n"
-                    f"Nombre: {name}\n"
-                    f"Email: {email}\n"
-                    f"Teléfono: {telefono}\n"
-                    f"Provincia: {provincia}\n"
-                    f"Especialidad: {especialidad}\n\n"
-                    f"Revisar y aprobar en: /admin/panel"
-                ),
-                cc=os.getenv("MAIL_BCC"),
-            )
-    except Exception as e:
-        print("Error enviando email de alta:", e)
+        send_mail(email, "Alta recibida · MEDIAZION", body_user)
+        send_mail(os.getenv("MAIL_TO","info@mediazion.eu"),
+                  "Nueva alta de mediador",
+                  f"{name} <{email}>\nProvincia: {cand['provincia']}\nEspecialidad: {cand['especialidad']}")
+    except Exception:
+        # no bloquea el alta si falla el correo
+        pass
 
-    return {"ok": True, "message": "Alta registrada. Recibirás un email de confirmación."}
+    return {"ok": True, "message": "Alta registrada. Revisa tu correo."}
 
-@router.get("/mediadores/public")
-def listar_mediadores_public(
-    provincia: Optional[str] = None,
-    especialidad: Optional[str] = None,
-    q: Optional[str] = None
-):
-    con = db()
-    cur = con.cursor()
-    where = ["status='approved'"]
-    params = []
-
-    if provincia:
-        where.append("LOWER(COALESCE(provincia,'')) LIKE ?")
-        params.append(f"%{provincia.lower()}%")
-    if especialidad:
-        where.append("LOWER(COALESCE(especialidad,'')) LIKE ?")
-        params.append(f"%{especialidad.lower()}%")
-    if q:
-        where.append("(LOWER(name) LIKE ? OR LOWER(COALESCE(bio,'')) LIKE ?)")
-        params.extend([f"%{q.lower()}%", f"%{q.lower()}%"])
-
-    sql = f\"\"\"SELECT id, name, email, bio, provincia, especialidad, photo_url, cv_url
-               FROM mediadores
-               WHERE {' AND '.join(where)}
-               ORDER BY id DESC
-            \"\"\"
-    rows = cur.execute(sql, tuple(params)).fetchall()
+@mediadores_router.get("/mediadores/public")
+def mediadores_public(q: Optional[str] = None,
+                      provincia: Optional[str] = None,
+                      especialidad: Optional[str] = None) -> List[Dict[str, Any]]:
+    cols = _cols()
+    sel = [c for c in ["id","name","bio","provincia","especialidad","photo_url","cv_url"] if c in cols]
+    if not sel: raise HTTPException(500, "Tabla 'mediadores' sin columnas esperadas")
+    con = db(); con.row_factory = Row
+    sql = f"SELECT {', '.join(sel)} FROM mediadores WHERE status='approved'"
+    params: List[Any] = []
+    if q and "name" in cols: sql += " AND name LIKE ?"; params.append(f"%{q}%")
+    if provincia and "provincia" in cols: sql += " AND provincia LIKE ?"; params.append(f"%{provincia}%")
+    if especialidad and "especialidad" in cols: sql += " AND especialidad LIKE ?"; params.append(f"%{especialidad}%")
+    sql += " ORDER BY id DESC"
+    rows = con.execute(sql, tuple(params)).fetchall()
     con.close()
-
+    # normaliza especialidad string → lista
     out = []
     for r in rows:
-        rid, name, email, bio, prov, espec, photo_url, cv_url = r
-        tags = [e.strip() for e in (espec or "").split(",") if e.strip()]
-        out.append({
-            "id": rid,
-            "nombre": name,
-            "email": email,
-            "bio": bio or "",
-            "provincia": prov or "",
-            "especialidad": tags,
-            "foto_url": photo_url or "",
-            "cv_url": cv_url or "",
-        })
+        d = dict(r)
+        if "especialidad" in d and isinstance(d["especialidad"], str):
+            d["especialidad"] = [s.strip() for s in d["especialidad"].split(",") if s.strip()]
+        out.append(d)
     return out
+
+# Suscripción Stripe (requiere alta previa)
+import stripe as _stripe
+
+def _stripe_client():
+    key = os.getenv("STRIPE_SECRET") or os.getenv("STRIPE_SECRET_KEY")
+    if not key: raise HTTPException(500, "STRIPE_SECRET no configurada")
+    _stripe.api_key = key
+    return _stripe
+
+@mediadores_router.post("/subscribe")
+def subscribe(body: Dict[str, str]):
+    email = _norm(body.get("email")).lower()
+    price = _norm(body.get("priceId") or os.getenv("STRIPE_PRICE_ID"))
+    if not email: raise HTTPException(400, "Falta email")
+    if not price: raise HTTPException(400, "Falta STRIPE_PRICE_ID")
+
+    con = db()
+    row = con.execute("SELECT id FROM mediadores WHERE email=?", (email,)).fetchone()
+    con.close()
+    if not row:
+        raise HTTPException(400, "Antes debes completar el alta de mediador.")
+
+    try:
+        cli = _stripe_client()
+        session = cli.checkout.Session.create(
+            mode="subscription",
+            payment_method_types=["card"],
+            line_items=[{"price": price, "quantity": 1}],
+            customer_email=email,
+            subscription_data={"trial_period_days": 7},
+            allow_promotion_codes=True,
+            success_url="https://mediazion.eu/suscripcion/ok",
+            cancel_url="https://mediazion.eu/suscripcion/cancel"
+        )
+        return {"ok": True, "url": session.url}
+    except Exception as e:
+        raise HTTPException(500, f"Stripe error: {e}")
