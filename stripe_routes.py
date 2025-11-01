@@ -1,4 +1,4 @@
-# stripe_routes.py — Checkout + Webhook (MEDIAZION)
+# stripe_routes.py — Checkout + Webhook (MEDIAZION) con autocreación si no existe
 import os, json, sqlite3
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Request
@@ -6,12 +6,12 @@ import stripe
 
 router = APIRouter()
 
-# ENV obligatorios
-STRIPE_SECRET = os.getenv("STRIPE_SECRET", "")        # sk_...
-STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "")    # price_...
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")  # whsec_...
-TRIAL_DAYS = int(os.getenv("TRIAL_DAYS", "7"))        # días de prueba (0 = sin trial)
-DB_PATH = os.getenv("DB_PATH", "mediazion.db")
+# ENV
+STRIPE_SECRET = os.getenv("STRIPE_SECRET", "")
+STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+TRIAL_DAYS = int(os.getenv("TRIAL_DAYS", "7"))
+DB_PATH = os.getenv("DB_PATH", "/opt/render/project/src/mediazion.db")
 
 if STRIPE_SECRET:
     stripe.api_key = STRIPE_SECRET
@@ -19,11 +19,21 @@ if STRIPE_SECRET:
 def _cx():
     cx = sqlite3.connect(DB_PATH); cx.row_factory = sqlite3.Row; return cx
 
-def _get_mediador(email: str):
+def _get(email: str):
     with _cx() as cx:
         cur = cx.execute("SELECT * FROM mediadores WHERE lower(email)=lower(?)", (email.lower(),))
-        row = cur.fetchone()
-        return dict(row) if row else None
+        r = cur.fetchone()
+        return dict(r) if r else None
+
+def _ensure(email: str):
+    """si no existe, lo crea aprobado/activo para no bloquear el flujo"""
+    with _cx() as cx:
+        cx.execute(
+            "INSERT OR IGNORE INTO mediadores (name,email,approved,status,subscription_status,trial_used) "
+            "VALUES (?,?,?,?,?,?)",
+            (email.split("@")[0].title(), email.lower(), 1, "active", "none", 0)
+        )
+        cx.commit()
 
 def _mark_trial_used(email: str):
     with _cx() as cx:
@@ -39,22 +49,17 @@ def _save_subscription(email: str, sub_id: str):
 
 @router.post("/subscribe")
 async def subscribe(payload: dict):
-    """
-    Crea sesión de Checkout de Stripe para suscripción.
-    - Si el mediador no existe: 400 (primero debe hacer el alta).
-    - Si no hay STRIPE_SECRET/PRICE_ID: 500.
-    - Si no ha usado trial y TRIAL_DAYS>0: crea trial; si ya lo usó, sin trial.
-    """
     email = (payload.get("email") or "").strip().lower()
     if not email:
         raise HTTPException(400, "Falta email")
     if not STRIPE_SECRET or not STRIPE_PRICE_ID:
         raise HTTPException(500, "Stripe no está configurado (STRIPE_SECRET / STRIPE_PRICE_ID)")
 
-    m = _get_mediador(email)
-    if not m:
-        raise HTTPException(400, "Antes debes completar el alta de mediador.")
+    # asegurar registro presente (auto-alta mínima y aprobada)
+    if not _get(email):
+        _ensure(email)
 
+    m = _get(email)
     apply_trial = (m.get("trial_used", 0) == 0) and TRIAL_DAYS > 0
 
     kwargs = dict(
