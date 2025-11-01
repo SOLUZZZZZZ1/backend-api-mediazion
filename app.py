@@ -1,4 +1,4 @@
-# app.py — MEDIAZION Backend (estable)
+# app.py — MEDIAZION Backend (alineado con admin_router sin prefix interno)
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,6 +34,7 @@ os.makedirs("uploads", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # Routers
+# Nota: admin_router NO lleva prefix interno; se aplica aquí.
 app.include_router(admin_router,      prefix="/admin", tags=["admin"])
 app.include_router(mediadores_router, prefix="",       tags=["mediadores"])
 app.include_router(news_router,       prefix="",       tags=["news"])

@@ -12,10 +12,5 @@ class ContactIn(BaseModel):
 
 @contact_router.post("/contact")
 def submit_contact(data: ContactIn):
-    """
-    Endpoint de contacto.
-    - Valida los campos básicos.
-    - Aquí puedes integrar: envío de email / guardar en BD / Slack, etc.
-    """
-    # TODO: integra tu lógica real (guardar en BD, enviar correo, etc.)
+    # TODO: integrar email/BD si quieres
     return {"ok": True, "received": data.model_dump()}
