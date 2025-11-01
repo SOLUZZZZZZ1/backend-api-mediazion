@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.staticfiles import StaticFiles
 
 from utils import ensure_db
+from contact_routes import contact_router
 from admin_routes import admin_router
 from mediadores_routes import mediadores_router
 from news_routes import news_router
@@ -37,6 +38,7 @@ app.include_router(admin_router,      prefix="/admin", tags=["admin"])
 app.include_router(mediadores_router, prefix="",       tags=["mediadores"])
 app.include_router(news_router,       prefix="",       tags=["news"])
 app.include_router(upload_router,     prefix="",       tags=["uploads"])
+app.include_router(contact_router)  # expone POST /contact
 
 @app.get("/health")
 def health():
