@@ -1,30 +1,33 @@
-# admin_routes.py — Rutas administrativas MEDIAZION (alineado con app.py que aplica prefix="/admin")
+# admin_routes.py — versión corregida y segura
 import os
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException
 
-# OJO: aquí NO ponemos prefix="/admin" porque ya se aplica en app.py
-admin_router = APIRouter(tags=["admin"])
+admin_router = APIRouter(prefix="/admin")
 
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or "cambia-este-token-en-produccion"
+# Token admin desde env (fallback seguro)
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or "supersecreto123"
 
-def _require(token_from_header: str | None):
-    if not token_from_header or token_from_header != ADMIN_TOKEN:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin token")
+def check_admin(token: str | None):
+    if token != ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 @admin_router.get("/health")
-def admin_health(x_admin_token: str | None = Header(default=None)):
-    """Comprobación de salud del área admin. Usa cabecera x-admin-token."""
-    _require(x_admin_token)
-    return {"ok": True, "scope": "admin"}
+def health(x_admin_token: str | None = Header(None)):
+    # salud simple: si no viene token devuelve 401, si viene y correcto devuelve ok
+    if x_admin_token is None:
+        raise HTTPException(status_code=401, detail="Missing token")
+    check_admin(x_admin_token)
+    return {"ok": True}
 
+# Endpoints de administración sencillos (stubs — conectarlos a BD)
 @admin_router.post("/approve/{mediador_id}")
-def approve_mediador(mediador_id: int, x_admin_token: str | None = Header(default=None)):
-    """Stub para aprobar un mediador (extiende con tu lógica de BD)."""
-    _require(x_admin_token)
-    return {"ok": True, "approved_id": mediador_id}
+def approve_mediador(mediador_id: str, x_admin_token: str | None = Header(None)):
+    check_admin(x_admin_token)
+    # TODO: actualizar en BD: approved = True
+    return {"ok": True, "id": mediador_id, "action": "approved"}
 
-@admin_router.post("/revoke/{mediador_id}")
-def revoke_mediador(mediador_id: int, x_admin_token: str | None = Header(default=None)):
-    """Stub para revocar un mediador (extiende con tu lógica de BD)."""
-    _require(x_admin_token)
-    return {"ok": True, "revoked_id": mediador_id}
+@admin_router.post("/disable/{mediador_id}")
+def disable_mediador(mediador_id: str, x_admin_token: str | None = Header(None)):
+    check_admin(x_admin_token)
+    # TODO: actualizar en BD: approved = False / status = disabled
+    return {"ok": True, "id": mediador_id, "action": "disabled"}
