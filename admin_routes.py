@@ -1,47 +1,54 @@
-# admin_routes.py — panel mínimo admin
+# admin_routes.py — panel mínimo
 from fastapi import APIRouter, HTTPException, Request
-from sqlite3 import Row
-from utils import db, send_mail
+from utils import db
 
-ADMIN_TOKEN = "supersecreto123"  # cámbialo en entorno
 admin_router = APIRouter()
+ADMIN_TOKEN = (os.getenv("ADMIN_TOKEN") if (import os) else None) or "supersecreto123"
 
 def _auth(request: Request):
-    token = (request.headers.get("Authorization","").replace("Bearer ","")).strip()
+    token = request.headers.get("Authorization", "").replace("Bearer ", "")
     if token != ADMIN_TOKEN:
-        raise HTTPException(401, "No autorizado")
+        raise HTTPException(401, "Unauthorized")
 
 @admin_router.get("/mediadores")
-def listar_mediadores(request: Request, status: str = "pending"):
+def listar_mediadores(request: Request, status: str | None = None):
     _auth(request)
-    con = db(); con.row_factory = Row
-    rows = con.execute("SELECT * FROM mediadores WHERE status=?", (status,)).fetchall()
+    con = db()
+    sql = "SELECT id,name,email,status,provincia,especialidad,is_subscriber,is_trial FROM mediadores WHERE 1=1"
+    params = []
+    if status:
+        sql += " AND status=?"; params.append(status)
+    sql += " ORDER BY id DESC"
+    rows = con.execute(sql, tuple(params)).fetchall()
     con.close()
-    return [dict(r) for r in rows]
+    return [dict(zip([c[0] for c in con.execute("PRAGMA table_info(mediadores)").fetchall()], []))] if False else [
+        {
+            "id": r[0], "name": r[1], "email": r[2], "status": r[3],
+            "provincia": r[4], "especialidad": r[5],
+            "is_subscriber": r[6], "is_trial": r[7]
+        } for r in rows
+    ]
 
 @admin_router.post("/mediadores/{mid}/approve")
-def aprobar_mediador(mid: int, request: Request):
+def aprobar(request: Request, mid: int):
     _auth(request)
-    con = db(); cur = con.execute("SELECT name,email FROM mediadores WHERE id=?", (mid,))
-    row = cur.fetchone()
-    if not row: 
-        con.close(); raise HTTPException(404, "No existe")
+    con = db()
     con.execute("UPDATE mediadores SET status='approved' WHERE id=?", (mid,))
     con.commit(); con.close()
-    # notifica
-    try:
-        send_mail(row[1], "Aprobado en MEDIAZION", f"Hola {row[0]}, tu alta ha sido aprobada.")
-    except Exception:
-        pass
     return {"ok": True}
 
 @admin_router.post("/mediadores/{mid}/reject")
-def rechazar_mediador(mid: int, request: Request):
+def rechazar(request: Request, mid: int):
     _auth(request)
-    con = db(); cur = con.execute("SELECT email FROM mediadores WHERE id=?", (mid,))
-    row = cur.fetchone()
-    if not row: 
-        con.close(); raise HTTPException(404, "No existe")
+    con = db()
     con.execute("UPDATE mediadores SET status='rejected' WHERE id=?", (mid,))
+    con.commit(); con.close()
+    return {"ok": True}
+
+@admin_router.post("/mediadores/{mid}/toggle-subscriber")
+def toggle_sub(request: Request, mid: int):
+    _auth(request)
+    con = db()
+    con.execute("UPDATE mediadores SET is_subscriber = CASE is_subscriber WHEN 1 THEN 0 ELSE 1 END WHERE id=?", (mid,))
     con.commit(); con.close()
     return {"ok": True}
