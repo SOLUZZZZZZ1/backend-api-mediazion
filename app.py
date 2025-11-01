@@ -9,6 +9,7 @@ from contact_routes import contact_router
 from admin_routes import admin_router
 from mediadores_routes import mediadores_router
 from news_routes import news_router
+from stripe_routes import router as stripe_router
 from upload_routes import upload_router  # subida local
 
 def parse_origins():
@@ -39,6 +40,7 @@ app.include_router(admin_router,      prefix="/admin", tags=["admin"])
 app.include_router(mediadores_router, prefix="",       tags=["mediadores"])
 app.include_router(news_router,       prefix="",       tags=["news"])
 app.include_router(upload_router,     prefix="",       tags=["uploads"])
+app.include_router(stripe_router,     prefix="",       tags=["stripe"])
 app.include_router(contact_router)  # expone POST /contact
 
 @app.get("/health")
