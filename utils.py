@@ -6,39 +6,19 @@ from datetime import datetime
 DB_PATH = os.getenv("DB_PATH", "mediazion.db")
 
 def db():
-    # ojo: es check_same_thread, no "window"
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 def sha256(s: str) -> str:
-    return hashlib.sha256((s or "").encode("utf-8")).hexdigest()
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 def now_iso() -> str:
-    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    """Devuelve la fecha/hora actual en ISO 8601 (UTC)."""
+    return datetime.utcnow().isoformat()
 
-def send_mail(subject: str, body: str, to: str, bcc: str | None = None):
-    host = os.getenv("SMTP_HOST", "")
-    port = int(os.getenv("SMTP_PORT", "587"))
-    user = os.getenv("SMTP_USER", "")
-    password = os.getenv("SMTP_PASS", "")
-    mail_from = os.getenv("MAIL_FROM", user or "info@mediazion.eu")
-    context = ssl.create_default_context()
-
-    if not host or not user:
-        # modo silencioso si no hay SMTP
-        return
-
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = mail_from
-    msg["To"] = to
-    if bcc:
-        msg["Bcc"] = bcc
-    msg.set_content(body)
-
-    with smtplib.SMTP(host, port) as s:
-        s.starttls(context=context) if os.getenv("SMTP_TLS", "true").lower() == "true" else None
-        s.login(user, password)
-        s.send_message(msg)
+def send_mail(to: str, subject: str, body: str):
+    """Envía email simple (por ahora sólo log)."""
+    print(f"[MAIL] To: {to}\nSubject: {subject}\n{body}")
+    # Aquí luego añadiremos SMTP real si lo deseas.
 
 def ensure_db():
     con = db()
@@ -59,9 +39,9 @@ def ensure_db():
         photo_url TEXT,
         cv_url TEXT,
         is_subscriber INTEGER DEFAULT 0,
-        subscription_status TEXT DEFAULT '',
+        subscription_status TEXT,
         is_trial INTEGER DEFAULT 0,
-        trial_expires_at TEXT DEFAULT ''
+        trial_expires_at TEXT
     )
     """)
     con.commit()
