@@ -1,4 +1,4 @@
-# admin_routes.py — Rutas administrativas MEDIAZION (alineado con app.py que usa prefix="/admin")
+# admin_routes.py — Rutas administrativas MEDIAZION (alineado con app.py que aplica prefix="/admin")
 import os
 from fastapi import APIRouter, Header, HTTPException, status
 
