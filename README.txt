@@ -1,19 +1,16 @@
-MEDIAZION · Frontend Contacto → Render API (v2)
+# MEDIAZION — Backend PostgreSQL (Render)
 
-1) Copia estos archivos en tu frontend:
-   - src/lib/api.js
-   - src/pages/Contacto.jsx
-   - .env.local.example (opcional)
+Archivos incluidos:
+- db.py
+- utils_pg.py
+- mediadores_routes.py
+- app.py
 
-2) Crea `.env.local` en la raíz del frontend con:
-   VITE_API_BASE=https://backend-api-mediazion-1.onrender.com
-
-3) En Vercel → Project → Settings → Environment Variables:
-   VITE_API_BASE = https://backend-api-mediazion-1.onrender.com
-   (Production + Preview)
-
-4) Build y despliega:
-   npm run build
-   vercel --prod --yes
-
-5) Prueba en /contacto. Si sale “Enviado”, revisa tu buzón admin@mediazion.eu.
+1) Copia estos archivos a `C:\MEDIAZION\backend-api` (sustituyendo los existentes donde aplique).
+2) En Render → backend, define `DATABASE_URL` con TU External Database URL de Postgres (añade `?sslmode=require` si no está en la URL).
+3) Añade también: `ADMIN_TOKEN`, `ALLOWED_ORIGINS`, `STRIPE_SECRET`, `STRIPE_PRICE_ID`, `TRIAL_DAYS`, `SMTP_*` si usas correo.
+4) Asegúrate de tener `psycopg2-binary` en requirements.txt y haz **Deploy** con **Clear build cache**.
+5) Prueba:
+   - `GET /health`
+   - `POST /mediadores/register`
+   - `GET /mediadores/public`
