@@ -1,4 +1,4 @@
-# stripe_routes.py — Checkout + Webhook (MEDIAZION) con autocreación si no existe
+# stripe_routes.py — Checkout + Webhook (MEDIAZION)
 import os, json, sqlite3
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Request
@@ -6,12 +6,11 @@ import stripe
 
 router = APIRouter()
 
-# ENV
 STRIPE_SECRET = os.getenv("STRIPE_SECRET", "")
 STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 TRIAL_DAYS = int(os.getenv("TRIAL_DAYS", "7"))
-DB_PATH = os.getenv("DB_PATH", "/opt/render/project/src/mediazion.db")
+DB_PATH = os.getenv("DB_PATH", "/opt/render/project/src/mediazion.db")  # <— misma ruta
 
 if STRIPE_SECRET:
     stripe.api_key = STRIPE_SECRET
@@ -26,7 +25,6 @@ def _get(email: str):
         return dict(r) if r else None
 
 def _ensure(email: str):
-    """si no existe, lo crea aprobado/activo para no bloquear el flujo"""
     with _cx() as cx:
         cx.execute(
             "INSERT OR IGNORE INTO mediadores (name,email,approved,status,subscription_status,trial_used) "
@@ -55,7 +53,7 @@ async def subscribe(payload: dict):
     if not STRIPE_SECRET or not STRIPE_PRICE_ID:
         raise HTTPException(500, "Stripe no está configurado (STRIPE_SECRET / STRIPE_PRICE_ID)")
 
-    # asegurar registro presente (auto-alta mínima y aprobada)
+    # Garantiza que el registro existe y está aprobado/activo
     if not _get(email):
         _ensure(email)
 
@@ -66,8 +64,8 @@ async def subscribe(payload: dict):
         mode="subscription",
         customer_email=email,
         line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
-        success_url=os.getenv("SUCCESS_URL", "https://mediazion.eu/success?session_id={CHECKOUT_SESSION_ID}"),
-        cancel_url=os.getenv("CANCEL_URL", "https://mediazion.eu/cancel"),
+        success_url=os.getenv("SUCCESS_URL","https://mediazion.eu/success?session_id={CHECKOUT_SESSION_ID}"),
+        cancel_url=os.getenv("CANCEL_URL","https://mediazion.eu/cancel"),
         metadata={"email": email}
     )
     if apply_trial:
@@ -83,13 +81,9 @@ async def subscribe(payload: dict):
 async def stripe_webhook(request: Request):
     payload = await request.body()
     sig = request.headers.get("stripe-signature", "")
-
     try:
-        event = (
-            stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
-            if STRIPE_WEBHOOK_SECRET else
-            json.loads(payload)
-        )
+        event = (stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+                 if STRIPE_WEBHOOK_SECRET else json.loads(payload))
     except Exception as e:
         raise HTTPException(400, f"Webhook error: {e}")
 
