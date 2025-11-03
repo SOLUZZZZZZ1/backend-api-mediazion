@@ -1,49 +1,99 @@
-# app.py — FastAPI con PostgreSQL para MEDIAZION
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.staticfiles import StaticFiles
 
-from utils_pg import ensure_db  # usa Postgres
+# --- DB init (PostgreSQL) ---
+from utils_pg import ensure_db  # crea tablas si no existen
+
+# --- Routers principales ---
 from admin_routes import admin_router
-from mediadores_routes import mediadores_router
-from news_routes import news_router
-from upload_routes import upload_router
 from contact_routes import contact_router
-from stripe_routes import router as stripe_router  # descomentar si ya lo tienes listo para PG
+
+# Estos pueden no existir en algunos despliegues: importa con fallback
+try:
+    from mediadores_routes import mediadores_router
+except Exception:
+    mediadores_router = None
+
+try:
+    from news_routes import news_router
+except Exception:
+    news_router = None
+
+try:
+    from upload_routes import upload_router
+except Exception:
+    upload_router = None
+
+# Stripe es opcional: si faltan secrets, no bloquea el arranque
+stripe_router = None
+try:
+    from stripe_routes import router as _stripe_router
+    stripe_router = _stripe_router
+except Exception:
+    stripe_router = None
+
+# Ruta de salud BD opcional
+db_router = None
+try:
+    from db_routes import db_router as _db_router
+    db_router = _db_router
+except Exception:
+    db_router = None
+
 
 def parse_origins():
+    """
+    Dominios explícitos permitidos (separados por coma) desde ALLOWED_ORIGINS.
+    Deja en entorno, por ejemplo:
+      https://mediazion.eu,https://www.mediazion.eu
+    """
     raw = os.getenv("ALLOWED_ORIGINS", "https://mediazion.eu,https://www.mediazion.eu")
-    return [o.strip() for o in raw.split(",")] if raw else []
+    return [o.strip() for o in raw.split(",") if o.strip()]
 
-app = FastAPI(title="MEDIAZION Backend", version="3.2.0")
 
-# Crea tablas si no existen (Postgres)
+app = FastAPI(title="MEDIAZION Backend", version="3.2.1")
+
+# Crea tablas si no existen (PostgreSQL)
 ensure_db()
 
-# CORS
+# --- CORS ---
+# 1) Permite solo dominios fijos desde ALLOWED_ORIGINS
+# 2) Además, permite cualquier subdominio *.vercel.app (para deploys sin tocar env)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=tuple(parse_origins()),
+    allow_origins=parse_origins(),
+    allow_origin_regex=r"https://.*\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# estáticos (si los usas)
+# --- Archivos estáticos (opcional) ---
 os.makedirs("uploads", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
-from db_routes import db_router
-# Routers
-app.include_router(admin_router,      prefix="/admin", tags=["admin"])
-app.include_router(mediadores_router, prefix="",       tags=["mediadores".replace("mediadores","mediadores")])
-app.include_router(news_router,       prefix="",       tags=["news"])
-app.include_router(upload_router,     prefix="",       tags=["uploads"])
-app.include_router(contact_router)  # POST /contact
-app.include_router(db_router, prefix="", tags=["db"])
-app.include_router(stripe_router,  prefix="", tags=["stripe"])  # habilita cuando migres stripe a PG
+# --- Routers ---
+app.include_router(admin_router, prefix="/admin", tags=["admin"])
+app.include_router(contact_router, prefix="", tags=["contact"])
 
-@app.get("/files".replace("files","health"))
+if mediadores_router is not None:
+    app.include_router(mediadores_router, prefix="", tags=["mediadores"])
+
+if news_router is not None:
+    app.include_router(news_router, prefix="", tags=["news"])
+
+if upload_router is not None:
+    app.include_router(upload_router, prefix="", tags=["uploads"])
+
+if stripe_router is not None:
+    app.include_router(stripe_router, prefix="", tags=["stripe"])
+
+if db_router is not None:
+    app.include_router(db_router, prefix="", tags=["db"])
+
+
+@app.get("/health")
 def health():
-    return {"ok": True, "service": "mediazion-backend", "version": "3.2.0"}
+    return {"ok": True, "service": "mediazion-backend", "version": "3.2.1"}
