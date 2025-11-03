@@ -1,19 +1,17 @@
-# stripe_routes.py — Stripe Checkout + Webhook usando PostgreSQL
+# stripe_routes.py — Stripe Checkout + Webhook (PostgreSQL)
 import os, json
 from fastapi import APIRouter, HTTPException, Request
 import stripe
-from db import pg_conn  # <-- usa tu helper PG: DATABASE_URL en Render
+from db import pg_conn  # usa DATABASE_URL
 
 router = APIRouter()
 
-STRIPE_SECRET = os.getenv("STRIPE_SECRET")
-PRICE_ID      = os.getenv("STRIPE_PRICE_ID")
-TRIAL_DAYS    = int(os.getenv("TRIAL_DAYS", "7"))
-WEBHOOK_SECRET= os.getenv("STRIPE_WEBHOOK_SECRET")
-
-# URLs de retorno (puedes mantener tus SUB_SUCCESS_URL / SUB_CANCEL_URL)
-SUCCESS_URL = os.getenv("SUB_SUCCESS_URL", "https://mediazion.eu/suscripcion/ok?session_id={CHECKOUT_SESSION_ID}")
-CANCEL_URL  = os.getenv("SUB_CANCEL_URL",  "https://mediazion.eu/suscripcion/cancel")
+STRIPE_SECRET  = os.getenv("STRIPE_SECRET")
+PRICE_ID       = os.getenv("STRIPE_PRICE_ID")
+TRIAL_DAYS     = int(os.getenv("TRIAL_DAYS", "7"))
+WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+SUCCESS_URL    = os.getenv("SUB_SUCCESS_URL", "https://mediazion.eu/suscripcion/ok?session_id={CHECKOUT_SESSION_ID}")
+CANCEL_URL     = os.getenv("SUB_CANCEL_URL",  "https://mediazion.eu/suscripcion/cancel")
 
 if not STRIPE_SECRET:
     raise RuntimeError("STRIPE_SECRET no está definido")
@@ -26,7 +24,6 @@ def get_mediator(email: str):
             return cur.fetchone()
 
 def ensure_mediator(email: str):
-    """Crea registro mínimo (aprobado/activo) si no existe, para no bloquear el flujo."""
     with pg_conn() as cx:
         with cx.cursor() as cur:
             cur.execute("""
@@ -50,25 +47,17 @@ def set_subscription(email: str, subscription_id: str, trial_used: bool = True):
 
 @router.post("/subscribe")
 def subscribe(payload: dict):
-    """
-    Crea una sesión de Checkout para suscripción:
-      - Si el mediador no existe → lo crea aprobado/activo (no bloquea).
-      - Si no ha usado trial y TRIAL_DAYS>0 → aplica trial; si ya lo usó → sin trial (pago directo).
-    """
     email = (payload.get("email") or "").strip().lower()
     price = payload.get("priceId") or PRICE_ID
-    if not email:
-        raise HTTPException(400, "Falta email")
-    if not price:
-        raise HTTPException(500, "STRIPE_PRICE_ID no configurado")
+    if not email:  raise HTTPException(400, "Falta email")
+    if not price:  raise HTTPException(500, "STRIPE_PRICE_ID no configurado")
 
     row = get_mediator(email)
     if not row:
         ensure_mediator(email)
         trial_used = False
     else:
-        # row es un dict-like gracias a RealDictCursor
-        trial_used = bool(row.get("trial_used"))
+        trial_used = bool(row.get("trial_used") if isinstance(row, dict) else row["trial_used"])
 
     allow_trial = (not trial_used) and TRIAL_DAYS > 0
 
@@ -100,7 +89,6 @@ async def webhook(req: Request):
     typ = event.get("type")
     obj = event.get("data", {}).get("object", {})
 
-    # Alta/actualización de suscripción: marca trial_used y guarda subscription_id
     if typ in ("customer.subscription.created", "customer.subscription.updated"):
         email = obj.get("customer_email")
         if not email and obj.get("customer"):
@@ -109,7 +97,6 @@ async def webhook(req: Request):
         if email:
             set_subscription(email, obj.get("id"), True)
 
-    # Baja: marcar status cancelado (opcional)
     if typ == "customer.subscription.deleted":
         email = obj.get("customer_email")
         if not email and obj.get("customer"):
