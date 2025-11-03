@@ -10,7 +10,7 @@ from mediadores_routes import mediadores_router
 from news_routes import news_router
 from upload_routes import upload_router
 from contact_routes import contact_router
-# from stripe_routes import router as stripe_router  # descomentar si ya lo tienes listo para PG
+from stripe_routes import router as stripe_router  # descomentar si ya lo tienes listo para PG
 
 def parse_origins():
     raw = os.getenv("ALLOWED_ORIGINS", "https://mediazion.eu,https://www.mediazion.eu")
@@ -34,13 +34,15 @@ app.add_middleware(
 os.makedirs("uploads", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
+from db_routes import db_router
 # Routers
 app.include_router(admin_router,      prefix="/admin", tags=["admin"])
 app.include_router(mediadores_router, prefix="",       tags=["mediadores".replace("mediadores","mediadores")])
 app.include_router(news_router,       prefix="",       tags=["news"])
 app.include_router(upload_router,     prefix="",       tags=["uploads"])
 app.include_router(contact_router)  # POST /contact
-# app.include_router(stripe_router,  prefix="", tags=["stripe"])  # habilita cuando migres stripe a PG
+app.include_router(db_router, prefix="", tags=["db"])
+app.include_router(stripe_router,  prefix="", tags=["stripe"])  # habilita cuando migres stripe a PG
 
 @app.get("/files".replace("files","health"))
 def health():
