@@ -1,107 +1,124 @@
-# stripe_routes.py — Checkout + Webhook (MEDIAZION)
-import os, json, sqlite3
-from datetime import datetime
+# stripe_routes.py — Stripe Checkout + Webhook usando PostgreSQL
+import os, json
 from fastapi import APIRouter, HTTPException, Request
 import stripe
+from db import pg_conn  # <-- usa tu helper PG: DATABASE_URL en Render
 
 router = APIRouter()
 
-STRIPE_SECRET = os.getenv("STRIPE_SECRET", "")
-STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
-TRIAL_DAYS = int(os.getenv("TRIAL_DAYS", "7"))
-DB_PATH = os.getenv("DB_PATH", "/opt/render/project/src/mediazion.db")  # <— misma ruta
+STRIPE_SECRET = os.getenv("STRIPE_SECRET")
+PRICE_ID      = os.getenv("STRIPE_PRICE_ID")
+TRIAL_DAYS    = int(os.getenv("TRIAL_DAYS", "7"))
+WEBHOOK_SECRET= os.getenv("STRIPE_WEBHOOK_SECRET")
 
-if STRIPE_SECRET:
-    stripe.api_key = STRIPE_SECRET
+# URLs de retorno (puedes mantener tus SUB_SUCCESS_URL / SUB_CANCEL_URL)
+SUCCESS_URL = os.getenv("SUB_SUCCESS_URL", "https://mediazion.eu/suscripcion/ok?session_id={CHECKOUT_SESSION_ID}")
+CANCEL_URL  = os.getenv("SUB_CANCEL_URL",  "https://mediazion.eu/suscripcion/cancel")
 
-def _cx():
-    cx = sqlite3.connect(DB_PATH); cx.row_factory = sqlite3.Row; return cx
+if not STRIPE_SECRET:
+    raise RuntimeError("STRIPE_SECRET no está definido")
+stripe.api_key = STRIPE_SECRET
 
-def _get(email: str):
-    with _cx() as cx:
-        cur = cx.execute("SELECT * FROM mediadores WHERE lower(email)=lower(?)", (email.lower(),))
-        r = cur.fetchone()
-        return dict(r) if r else None
+def get_mediator(email: str):
+    with pg_conn() as cx:
+        with cx.cursor() as cur:
+            cur.execute("SELECT id, trial_used FROM mediadores WHERE email = LOWER(%s)", (email,))
+            return cur.fetchone()
 
-def _ensure(email: str):
-    with _cx() as cx:
-        cx.execute(
-            "INSERT OR IGNORE INTO mediadores (name,email,approved,status,subscription_status,trial_used) "
-            "VALUES (?,?,?,?,?,?)",
-            (email.split("@")[0].title(), email.lower(), 1, "active", "none", 0)
-        )
-        cx.commit()
+def ensure_mediator(email: str):
+    """Crea registro mínimo (aprobado/activo) si no existe, para no bloquear el flujo."""
+    with pg_conn() as cx:
+        with cx.cursor() as cur:
+            cur.execute("""
+                INSERT INTO mediadores (name,email,approved,status,subscription_status,trial_used)
+                VALUES (%s, LOWER(%s), TRUE, 'active', 'none', FALSE)
+                ON CONFLICT (email) DO NOTHING
+            """, (email.split("@")[0].title(), email))
+            cx.commit()
 
-def _mark_trial_used(email: str):
-    with _cx() as cx:
-        cx.execute("UPDATE mediadores SET trial_used=1, trial_start=? WHERE lower(email)=lower(?)",
-                   (datetime.utcnow().isoformat(), email.lower()))
-        cx.commit()
-
-def _save_subscription(email: str, sub_id: str):
-    with _cx() as cx:
-        cx.execute("UPDATE mediadores SET subscription_id=?, status='active' WHERE lower(email)=lower(?)",
-                   (sub_id, email.lower()))
-        cx.commit()
+def set_subscription(email: str, subscription_id: str, trial_used: bool = True):
+    with pg_conn() as cx:
+        with cx.cursor() as cur:
+            cur.execute("""
+                UPDATE mediadores
+                   SET subscription_id=%s,
+                       trial_used=%s,
+                       status='active'
+                 WHERE email = LOWER(%s)
+            """, (subscription_id, trial_used, email))
+            cx.commit()
 
 @router.post("/subscribe")
-async def subscribe(payload: dict):
+def subscribe(payload: dict):
+    """
+    Crea una sesión de Checkout para suscripción:
+      - Si el mediador no existe → lo crea aprobado/activo (no bloquea).
+      - Si no ha usado trial y TRIAL_DAYS>0 → aplica trial; si ya lo usó → sin trial (pago directo).
+    """
     email = (payload.get("email") or "").strip().lower()
+    price = payload.get("priceId") or PRICE_ID
     if not email:
         raise HTTPException(400, "Falta email")
-    if not STRIPE_SECRET or not STRIPE_PRICE_ID:
-        raise HTTPException(500, "Stripe no está configurado (STRIPE_SECRET / STRIPE_PRICE_ID)")
+    if not price:
+        raise HTTPException(500, "STRIPE_PRICE_ID no configurado")
 
-    # Garantiza que el registro existe y está aprobado/activo
-    if not _get(email):
-        _ensure(email)
+    row = get_mediator(email)
+    if not row:
+        ensure_mediator(email)
+        trial_used = False
+    else:
+        # row es un dict-like gracias a RealDictCursor
+        trial_used = bool(row.get("trial_used"))
 
-    m = _get(email)
-    apply_trial = (m.get("trial_used", 0) == 0) and TRIAL_DAYS > 0
-
-    kwargs = dict(
-        mode="subscription",
-        customer_email=email,
-        line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
-        success_url=os.getenv("SUCCESS_URL","https://mediazion.eu/success?session_id={CHECKOUT_SESSION_ID}"),
-        cancel_url=os.getenv("CANCEL_URL","https://mediazion.eu/cancel"),
-        metadata={"email": email}
-    )
-    if apply_trial:
-        kwargs["subscription_data"] = {"trial_period_days": TRIAL_DAYS}
+    allow_trial = (not trial_used) and TRIAL_DAYS > 0
 
     try:
-        session = stripe.checkout.Session.create(**kwargs)
-        return {"url": session.url}
+        session = stripe.checkout.Session.create(
+            mode="subscription",
+            customer_email=email,
+            line_items=[{"price": price, "quantity": 1}],
+            subscription_data={"trial_period_days": TRIAL_DAYS} if allow_trial else {},
+            success_url=SUCCESS_URL,
+            cancel_url=CANCEL_URL,
+            metadata={"email": email},
+        )
+        return {"url": session["url"]}
     except stripe.error.StripeError as e:
         raise HTTPException(400, f"Stripe error: {str(e)}")
 
 @router.post("/stripe/webhook")
-async def stripe_webhook(request: Request):
-    payload = await request.body()
-    sig = request.headers.get("stripe-signature", "")
+async def webhook(req: Request):
+    payload = await req.body()
     try:
-        event = (stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
-                 if STRIPE_WEBHOOK_SECRET else json.loads(payload))
+        if WEBHOOK_SECRET:
+            event = stripe.Webhook.construct_event(payload, req.headers.get("Stripe-Signature"), WEBHOOK_SECRET)
+        else:
+            event = json.loads(payload)
     except Exception as e:
-        raise HTTPException(400, f"Webhook error: {e}")
+        raise HTTPException(status_code=400, detail=f"Webhook error: {e}")
 
-    t = event.get("type")
-    data = event.get("data", {}).get("object", {})
+    typ = event.get("type")
+    obj = event.get("data", {}).get("object", {})
 
-    if t in ("customer.subscription.created", "customer.subscription.updated"):
-        email = data.get("customer_email") or (data.get("customer_details") or {}).get("email")
-        sub_id = data.get("id")
+    # Alta/actualización de suscripción: marca trial_used y guarda subscription_id
+    if typ in ("customer.subscription.created", "customer.subscription.updated"):
+        email = obj.get("customer_email")
+        if not email and obj.get("customer"):
+            cust = stripe.Customer.retrieve(obj["customer"])
+            email = (cust.get("email") or "").lower()
         if email:
-            _save_subscription(email, sub_id)
-            _mark_trial_used(email)
+            set_subscription(email, obj.get("id"), True)
 
-    if t == "customer.subscription.deleted":
-        email = data.get("customer_email") or (data.get("customer_details") or {}).get("email")
+    # Baja: marcar status cancelado (opcional)
+    if typ == "customer.subscription.deleted":
+        email = obj.get("customer_email")
+        if not email and obj.get("customer"):
+            cust = stripe.Customer.retrieve(obj["customer"])
+            email = (cust.get("email") or "").lower()
         if email:
-            with _cx() as cx:
-                cx.execute("UPDATE mediadores SET status='canceled' WHERE lower(email)=lower(?)", (email.lower(),))
-                cx.commit()
+            with pg_conn() as cx:
+                with cx.cursor() as cur:
+                    cur.execute("UPDATE mediadores SET status='canceled' WHERE email=LOWER(%s)", (email,))
+                    cx.commit()
 
     return {"received": True}
