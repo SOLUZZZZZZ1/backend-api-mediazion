@@ -1,4 +1,4 @@
-# stripe_routes.py — Stripe Checkout + Webhook (PostgreSQL robusto)
+# stripe_routes.py — Stripe Checkout + Webhook (tupla→dict + validación de alta)
 import os, json
 from fastapi import APIRouter, HTTPException, Request
 import stripe
@@ -17,14 +17,6 @@ if not STRIPE_SECRET:
     raise RuntimeError("STRIPE_SECRET no está definido")
 stripe.api_key = STRIPE_SECRET
 
-
-def _row_to_dict(row, cols):
-    """Convierte filas de psycopg2 (tupla) a dict"""
-    if row is None:
-        return None
-    return {cols[i]: row[i] for i in range(len(cols))}
-
-
 def get_mediator(email: str):
     with pg_conn() as cx:
         with cx.cursor() as cur:
@@ -33,11 +25,10 @@ def get_mediator(email: str):
                 FROM mediadores WHERE email = LOWER(%s)
             """, (email,))
             row = cur.fetchone()
-            if row:
-                cols = [d[0] for d in cur.description]
-                return _row_to_dict(row, cols)
-            return None
-
+            if not row:
+                return None
+            cols = [d[0] for d in cur.description]
+            return { cols[i]: row[i] for i in range(len(cols)) }  # ← tupla → dict
 
 @router.post("/subscribe")
 def subscribe(payload: dict):
@@ -52,8 +43,8 @@ def subscribe(payload: dict):
     if not row:
         raise HTTPException(400, "Completa tu alta de mediador antes de suscribirte.")
 
-    # Validar datos mínimos
-    missing = [k for k in ("phone", "provincia", "especialidad") if not (row.get(k) or "").strip()]
+    # Debe tener datos completos de alta
+    missing = [k for k in ("phone","provincia","especialidad") if not (row.get(k) or "").strip()]
     if missing:
         raise HTTPException(400, f"Faltan datos en el alta: {', '.join(missing)}")
 
@@ -72,10 +63,10 @@ def subscribe(payload: dict):
         )
         return {"url": session["url"]}
     except stripe.error.StripeError as e:
+        # Devuelve motivo legible (400) si falla Stripe (price, key, etc.)
         raise HTTPException(400, f"Stripe error: {e.user_message or str(e)}")
     except Exception as e:
         raise HTTPException(500, f"Subscribe error: {e}")
-
 
 @router.post("/stripe/webhook")
 async def webhook(req: Request):
