@@ -64,7 +64,7 @@ ensure_db()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=parse_origins(),
-    allow_origin_regex=r"https://.*\.vercel\.app$",
+    allow_origin_regex=r"https://.*\\.vercel\\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -96,4 +96,4 @@ if db_router is not None:
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "mediazion-backend", "version": "3.2.1"}
+    return {"ok": True, "service": "backend-api-mediazion-1", "version": "3.2.1"}
