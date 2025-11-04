@@ -1,8 +1,8 @@
-# stripe_routes.py — Stripe Checkout + Webhook (PostgreSQL, robusto tupla/dict)
+# stripe_routes.py — Stripe Checkout + Webhook (PostgreSQL robusto)
 import os, json
 from fastapi import APIRouter, HTTPException, Request
 import stripe
-from db import pg_conn  # usa DATABASE_URL
+from db import pg_conn
 
 router = APIRouter()
 
@@ -17,48 +17,27 @@ if not STRIPE_SECRET:
     raise RuntimeError("STRIPE_SECRET no está definido")
 stripe.api_key = STRIPE_SECRET
 
-def _row_to_dict(row, cols=None):
-    """
-    Convierte filas de psycopg3 (dict_row), RealDictRow o tuplas en dict.
-    """
+
+def _row_to_dict(row, cols):
+    """Convierte filas de psycopg2 (tupla) a dict"""
     if row is None:
         return None
-    # dict-like (psycopg3 dict_row o psycopg2.extras.RealDictRow)
-    if hasattr(row, "keys"):
-        return dict(row)
-    # tupla -> mapear por orden de columnas conocidas
-    if cols and isinstance(row, tuple):
-        return {k: row[i] for i, k in enumerate(cols)}
-    return None
+    return {cols[i]: row[i] for i in range(len(cols))}
+
 
 def get_mediator(email: str):
     with pg_conn() as cx:
         with cx.cursor() as cur:
-            cur.execute("SELECT id, trial_used FROM mediadores WHERE email = LOWER(%s)", (email,))
+            cur.execute("""
+                SELECT id, trial_used, approved, status, phone, provincia, especialidad
+                FROM mediadores WHERE email = LOWER(%s)
+            """, (email,))
             row = cur.fetchone()
-            return _row_to_dict(row, cols=["id", "trial_used"])
+            if row:
+                cols = [d[0] for d in cur.description]
+                return _row_to_dict(row, cols)
+            return None
 
-def ensure_mediator(email: str):
-    with pg_conn() as cx:
-        with cx.cursor() as cur:
-            cur.execute("""
-                INSERT INTO mediadores (name,email,approved,status,subscription_status,trial_used)
-                VALUES (%s, LOWER(%s), TRUE, 'active', 'none', FALSE)
-                ON CONFLICT (email) DO NOTHING
-            """, (email.split("@")[0].title(), email))
-            cx.commit()
-
-def set_subscription(email: str, subscription_id: str, trial_used: bool = True):
-    with pg_conn() as cx:
-        with cx.cursor() as cur:
-            cur.execute("""
-                UPDATE mediadores
-                   SET subscription_id=%s,
-                       trial_used=%s,
-                       status='active'
-                 WHERE email = LOWER(%s)
-            """, (subscription_id, trial_used, email))
-            cx.commit()
 
 @router.post("/subscribe")
 def subscribe(payload: dict):
@@ -71,11 +50,14 @@ def subscribe(payload: dict):
 
     row = get_mediator(email)
     if not row:
-        ensure_mediator(email)
-        trial_used = False
-    else:
-        trial_used = bool(row.get("trial_used"))
+        raise HTTPException(400, "Completa tu alta de mediador antes de suscribirte.")
 
+    # Validar datos mínimos
+    missing = [k for k in ("phone", "provincia", "especialidad") if not (row.get(k) or "").strip()]
+    if missing:
+        raise HTTPException(400, f"Faltan datos en el alta: {', '.join(missing)}")
+
+    trial_used = bool(row.get("trial_used"))
     allow_trial = (not trial_used) and TRIAL_DAYS > 0
 
     try:
@@ -90,11 +72,10 @@ def subscribe(payload: dict):
         )
         return {"url": session["url"]}
     except stripe.error.StripeError as e:
-        # Devuelve detalle legible (400) para ver el motivo real (price, clave, etc.)
-        raise HTTPException(400, f"Stripe error: {str(e)}")
+        raise HTTPException(400, f"Stripe error: {e.user_message or str(e)}")
     except Exception as e:
-        # Cualquier otro error
         raise HTTPException(500, f"Subscribe error: {e}")
+
 
 @router.post("/stripe/webhook")
 async def webhook(req: Request):
@@ -116,7 +97,14 @@ async def webhook(req: Request):
             cust = stripe.Customer.retrieve(obj["customer"])
             email = (cust.get("email") or "").lower()
         if email:
-            set_subscription(email, obj.get("id"), True)
+            with pg_conn() as cx:
+                with cx.cursor() as cur:
+                    cur.execute("""
+                        UPDATE mediadores
+                           SET subscription_id=%s, trial_used=TRUE, status='active'
+                         WHERE email = LOWER(%s)
+                    """, (obj.get("id"), email))
+                    cx.commit()
 
     if typ == "customer.subscription.deleted":
         email = obj.get("customer_email")
