@@ -1,4 +1,4 @@
-# stripe_routes.py — Stripe Checkout + Webhook (PostgreSQL)
+# stripe_routes.py — Stripe Checkout + Webhook (PostgreSQL, robusto tupla/dict)
 import os, json
 from fastapi import APIRouter, HTTPException, Request
 import stripe
@@ -17,11 +17,26 @@ if not STRIPE_SECRET:
     raise RuntimeError("STRIPE_SECRET no está definido")
 stripe.api_key = STRIPE_SECRET
 
+def _row_to_dict(row, cols=None):
+    """
+    Convierte filas de psycopg3 (dict_row), RealDictRow o tuplas en dict.
+    """
+    if row is None:
+        return None
+    # dict-like (psycopg3 dict_row o psycopg2.extras.RealDictRow)
+    if hasattr(row, "keys"):
+        return dict(row)
+    # tupla -> mapear por orden de columnas conocidas
+    if cols and isinstance(row, tuple):
+        return {k: row[i] for i, k in enumerate(cols)}
+    return None
+
 def get_mediator(email: str):
     with pg_conn() as cx:
         with cx.cursor() as cur:
             cur.execute("SELECT id, trial_used FROM mediadores WHERE email = LOWER(%s)", (email,))
-            return cur.fetchone()
+            row = cur.fetchone()
+            return _row_to_dict(row, cols=["id", "trial_used"])
 
 def ensure_mediator(email: str):
     with pg_conn() as cx:
@@ -49,15 +64,17 @@ def set_subscription(email: str, subscription_id: str, trial_used: bool = True):
 def subscribe(payload: dict):
     email = (payload.get("email") or "").strip().lower()
     price = payload.get("priceId") or PRICE_ID
-    if not email:  raise HTTPException(400, "Falta email")
-    if not price:  raise HTTPException(500, "STRIPE_PRICE_ID no configurado")
+    if not email:
+        raise HTTPException(400, "Falta email")
+    if not price:
+        raise HTTPException(500, "STRIPE_PRICE_ID no configurado")
 
     row = get_mediator(email)
     if not row:
         ensure_mediator(email)
         trial_used = False
     else:
-        trial_used = bool(row.get("trial_used") if isinstance(row, dict) else row["trial_used"])
+        trial_used = bool(row.get("trial_used"))
 
     allow_trial = (not trial_used) and TRIAL_DAYS > 0
 
@@ -73,7 +90,11 @@ def subscribe(payload: dict):
         )
         return {"url": session["url"]}
     except stripe.error.StripeError as e:
+        # Devuelve detalle legible (400) para ver el motivo real (price, clave, etc.)
         raise HTTPException(400, f"Stripe error: {str(e)}")
+    except Exception as e:
+        # Cualquier otro error
+        raise HTTPException(500, f"Subscribe error: {e}")
 
 @router.post("/stripe/webhook")
 async def webhook(req: Request):
