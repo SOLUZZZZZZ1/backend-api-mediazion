@@ -1,4 +1,4 @@
-# mediadores_routes.py — Alta de Mediadores completa
+# mediadores_routes.py — Alta de Mediadores completa (auto-aprobado)
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, EmailStr
 from db import pg_conn
@@ -22,6 +22,7 @@ def register(data: MediadorIn):
     email = data.email.lower().strip()
     name  = data.name.strip()
 
+    # Inserta/actualiza y deja aprobado+activo
     with pg_conn() as cx:
         with cx.cursor() as cur:
             cur.execute("""
@@ -37,6 +38,7 @@ def register(data: MediadorIn):
             """, (name, email, data.phone, data.provincia, data.especialidad))
             cx.commit()
 
+    # Emails
     user_html = f"""
     <div style="font-family:system-ui,Segoe UI,Roboto,Arial">
       <p>Hola {name},</p>
