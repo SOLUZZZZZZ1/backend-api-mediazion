@@ -1,3 +1,4 @@
+# app.py
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,6 +43,15 @@ try:
 except Exception:
     db_router = None
 
+# Migrações temporales (endpoint para ejecutar la migración desde el backend)
+# Este router es temporal: cuando confirmes, bórralo (y quita la inclusión más abajo).
+migrate_router = None
+try:
+    from migrate_routes import router as _migrate_router
+    migrate_router = _migrate_router
+except Exception:
+    migrate_router = None
+
 
 def parse_origins():
     """
@@ -56,6 +66,7 @@ def parse_origins():
 app = FastAPI(title="MEDIAZION Backend", version="3.2.1")
 
 # Crea tablas si no existen (PostgreSQL)
+# Nota: ensure_db() debe usar la variable DATABASE_URL de Render
 ensure_db()
 
 # --- CORS ---
@@ -64,7 +75,7 @@ ensure_db()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=parse_origins(),
-    allow_origin_regex=r"https://.*\\.vercel\\.app$",
+    allow_origin_regex=r"https://.*\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -93,7 +104,12 @@ if stripe_router is not None:
 if db_router is not None:
     app.include_router(db_router, prefix="", tags=["db"])
 
+# Incluimos el router de migración **solo si existe** (temporal)
+if migrate_router is not None:
+    app.include_router(migrate_router, prefix="", tags=["admin-migrate"])
+
 
 @app.get("/health")
 def health():
+    # Nombre de servicio actualizado
     return {"ok": True, "service": "backend-api-mediazion-1", "version": "3.2.1"}
