@@ -18,6 +18,11 @@ except Exception:
     mediadores_router = None
 
 try:
+    from admin_manage_routes import admin_manage
+except Exception:
+    admin_manage = None
+
+try:
     from news_routes import news_router
 except Exception:
     news_router = None
@@ -103,8 +108,12 @@ if news_router is not None:
 if auth_router is not None:
     app.include_router(auth_router)
 
-if upload_router is not None:
-    app.include_router(upload_router, prefix="", tags=["uploads"])
+if auth_router is not None:
+    app.include_router(auth_router)
+
+
+if admin_manage is not None:
+    app.include_router(admin_manage)
 
 if stripe_router is not None:
     app.include_router(stripe_router, prefix="", tags=["stripe"])
