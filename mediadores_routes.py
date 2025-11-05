@@ -1,11 +1,11 @@
-# mediadores_routes.py — Alta de Mediadores: DNI/CIF + tipo + clave temporal (bcrypt) + commit seguro + soft-fail email
+# mediadores_routes.py — Alta completa + DNI/CIF + clave temporal + correo con enlace + soft-fail
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, EmailStr
 from db import pg_conn
 from contact_routes import _send_mail, MAIL_TO_DEFAULT
 import secrets, bcrypt
 
-mediadores_router = APIRouter(prefix="/mediadores", tags=["mediadores"])
+mediadores_router = APIRouter(prefix="/mediadores", tagS=["mediadores"])
 
 class MediadorIn(BaseModel):
     name: str
@@ -32,17 +32,17 @@ def register(data: MediadorIn):
             if cur.fetchone():
                 raise HTTPException(409, "Este correo ya está registrado")
 
-    # Generar clave temporal y hash bcrypt
+    # Generar contraseña temporal + hash
     temp_password = secrets.token_urlsafe(6)[:10]
     pwd_hash = bcrypt.hashpw(temp_password.encode("utf-8"), bcrypt.gensalt()).decode()
 
-    # INSERT con commit seguro (commit fuera del cursor)
+    # Insertar y COMMIT antes de enviar correos
     with pg_conn() as cx:
         with cx.cursor() as cur:
             cur.execute("""
-                INSERT INTO mediadores (name,email,phone,provincia,especialidad,
-                                        dni_cif,tipo,
-                                        approved,status,subscription_status,trial_used,
+                INSERT INTO mediadores (name, email, phone, provincia, especialidad,
+                                        dni_cif, tipo,
+                                        approved, status, subscription_status, trial_used,
                                         password_hash)
                 VALUES (%s, LOWER(%s), %s, %s, %s,
                         %s, %s,
@@ -52,14 +52,17 @@ def register(data: MediadorIn):
                   data.dni_cif.strip(), data.tipo.strip(), pwd_hash))
         cx.commit()
 
-    # Correos (no rompen el alta si fallan)
+    # Correos (usuario + info) — soft-fail si el SMTP cae
     user_html = f"""
     <div style="font-family:system-ui,Segoe UI,Roboto,Arial">
       <p>Hola {name},</p>
       <p>Tu alta como mediador en <strong>MEDIAZION</strong> se ha registrado correctamente.</p>
       <p><strong>Tipo:</strong> {data.tipo} &nbsp;&nbsp; <strong>DNI/CIF:</strong> {data.dni_cif}</p>
-      <p><strong>Contraseña temporal:</strong> {temp_password}</p>
-      <p>Puedes acceder a tu panel y cambiarla una vez dentro.</p>
+      <p><strong>Contraseña temporal:</strong> <code>{temp_password}</code></p>
+      <p>Puedes acceder al panel desde:
+        <a href="https://mediazion.eu/panel-mediador">https://mediazion.eu/panel-mediador</a>
+      </p>
+      <p>Una vez dentro, cámbiala en la sección <em>“Cambiar contraseña”</em>.</p>
       <p>Un saludo,<br/>Equipo MEDIAZION</p>
     </div>
     """
@@ -78,8 +81,9 @@ def register(data: MediadorIn):
     </div>
     """
     try:
-        _send_mail(email, "Alta registrada · MEDIAZION", user_html, name)
-        _send_mail(MAIL_TO_DEFAULT, f"[Alta Mediador] {name} <{email}>", info_html, "MEDIAZION")
+        _sav = _send_mail  # para no reimportar
+        _sav(email, "Alta registrada · MEDIAZION", user_html, name)
+        _sav(MAIL_TO_DEFAULT, f"[Alta Mediador] {name} <{email}>", info_html, "MEDIAZION")
     except Exception:
         pass
 
