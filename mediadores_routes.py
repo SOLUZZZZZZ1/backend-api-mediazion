@@ -1,4 +1,4 @@
-# mediadores_routes.py — Alta completa + DNI/CIF + clave temporal + trial 7 días + correo con enlaces
+# mediadores_routes.py — Alta completa + DNI/CIF + clave temporal (bcrypt) + trial 7 días + correo con enlaces
 from datetime import datetime, timedelta, timezone
 import secrets
 import bcrypt
@@ -10,9 +10,9 @@ from contact_routes import _send_mail, MAIL_TO_DEFAULT
 
 mediadores_router = APIRouter(prefix="/mediadores", tags=["mediadores"])
 
-TRIAL_DAYS = 7  # días de prueba PRO
+TRAVEL_DAYS = 7  # días de prueba PRO
 PANEL_URL = "https://mediazion.eu/panel-mediador"
-CTA_SUBSCRIBE_URL = "https://mediazion.eu/suscripcion/ok?start=1"  # CTA para iniciar/animar a suscripción
+CTA_SUBSCRIBE_URL = "https://mediazion.eu/suscripcion/ok?start=1"  # CTA “Activar suscripción”
 
 class MediadorIn(BaseModel):
     name: str
@@ -32,22 +32,22 @@ def register(data: MediadorIn):
     email = data.email.lower().strip()
     name  = data.name.strip()
 
-    # Bloqueo de correos ya registrados
+    # Bloqueo de duplicados
     with pg_conn() as cx:
         with cx.cursor() as cur:
             cur.execute("SELECT id FROM mediadores WHERE email = LOWER(%s)", (email,))
             if cur.fetchone():
-                raise HTTPException(409, "Este correo ya está registrado")
+                raise Exception("DUPLICATE_EMAIL")
 
     # Generar contraseña temporal + hash bcrypt
     temp_password = secrets.token_urlsafe(6)[:10]
     pwd_hash = bcrypt.hashpw(temp_password.encode("utf-8"), bcrypt.gensalt()).decode()
 
-    # Marcar alta en modo PRO (trialing) durante 7 días
+    # Alta en modo PRO (trialing) durante 7 días
     trial_start = datetime.now(timezone.utc)
-    trial_end   = trial_start + timedelta(days=TRIAL_DAYS)
+    trial_end   = trial_start + timedelta(days=TRAVEL_DAYS)
 
-    # Insertar y COMMIT antes de enviar correos (para no perder el alta si falla SMTP)
+    # Insert y commit antes de enviar correos
     with pg_conn() as cx:
         with cx.cursor() as cur:
             cur.execute(
@@ -75,7 +75,7 @@ def register(data: MediadorIn):
             )
         cx.commit()
 
-    # ----- CORREOS (soft-fail: no rompen el flujo si fallan) -----
+    # --- Correo al usuario (con contraseña + enlace + CTA) ---
     user_html = f"""
     <div style="font-family:system-ui,Segoe UI,Roboto,Arial">
       <p>Hola {name},</p>
@@ -88,14 +88,18 @@ def register(data: MediadorIn):
       <p>Tu periodo de prueba termina el <strong>{trial_end.strftime('%d/%m/%Y')}</strong>. Después seguirás en modo BÁSICO si no activas la suscripción.</p>
       <p>
         <a href="{CTA_SUBSCRIBE_URL}"
-           style="display:inline-block;background:#0ea5e9;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none">
+           style="display:inline-block;background:#0ea5e9;color:#fff;padding:10px 14px;border-radius:12px;text-decoration:none">
            Activar suscripción definitiva
         </a>
+      </p>
+      <p style="margin-top:8px;font-size:12px;opacity:.7">
+        También puedes activar tu suscripción desde tu Panel de Mediador en cualquier momento.
       </p>
       <p>Un saludo,<br/>Equipo MEDIAZION</p>
     </div>
     """
 
+    # Correo interno
     info_html = f"""
     <div style="font-family:system-ui,Segoe UI,Roboto,Arial">
       <p>Nuevo alta de mediador:</p>
@@ -116,57 +120,7 @@ def register(data: MediadorIn):
         _send_mail(email, "Alta registrada · Acceso PRO 7 días · MEDIAZION", user_html, name)
         _send_mail(MAIL_TO_DEFAULT, f"[Alta Mediador] {name} <{email}>", info_html, "MEDIAZION")
     except Exception:
+        # Soft-fail: no romper el alta si el SMTP cae
         pass
-    # -------------------------------------------------------------
 
     return {"ok": True, "message": "Alta realizada. Revisa tu correo con la contraseña temporal y el enlace al panel."}
-
-# Endpoint para que el frontend consulte el estado y pinte el CTA correcto
-class StatusOut(BaseModel):
-    exists: bool
-    id: int | None = None
-    approved: bool | None = None
-    status: str | None = None            # active | disabled | canceled
-    subscription_status: str | None = None  # none | trialing | active | expired
-    trial_used: bool | None = None
-    trial_days_left: int | None = None
-    trial_end: str | None = None
-
-@mediadores_router.get("/status", response_model=StatusOut)
-def status(email: str):
-    e = email.lower().strip()
-    with pg_conn() as cx:
-        with cx.cursor() as cur:
-            cur.execute("""
-                SELECT id, approved, status, subscription_status, trial_used, trial_start, trial_end
-                  FROM mediadores
-                 WHERE email = LOWER(%s)
-            """, (e,))
-            row = cur.fetchone()
-
-            if not row:
-                return {"exists": False}
-
-            cols = [d[0] for d in cur.description]
-            data = {cols[i]: row[i] for i in range(len(cols))}
-            # calcular días restantes de trial
-            t_end = data.get("trial_end")
-            days_left = None
-            t_end_str = None
-            if t_end:
-                # t_end es datetime
-                t_end_str = t_end.strftime("%Y-%m-%d")
-                now = datetime.now(timezone.utc)
-                delta = (t_end - now).days
-                days_left = max(delta, 0)
-
-            return {
-                "exists": True,
-                "id": data.get("id"),
-                "approved": data.get("approved"),
-                "status": data.get("status"),
-                "subscription_status": data.get("subscription_status"),
-                "trial_used": data.get("trial_used"),
-                "trial_days_left": days_left,
-                "trial_end": t_end_str
-            }
