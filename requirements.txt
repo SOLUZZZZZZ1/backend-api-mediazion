@@ -14,3 +14,4 @@ pydantic[email]>=2.9,<2.10
 psycopg2-binary>=2.9,<3.0
 uvloop
 httptools
+bcrypt>=4.1
