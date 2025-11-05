@@ -8,7 +8,7 @@ from starlette.staticfiles import StaticFiles
 from utils_pg import ensure_db
 
 # --- Routers obligatorios
-from admin_routes import admin_route r
+from admin_routes import admin_router
 from contact_camera_router import contact_router  # if your module is contact_routes
 from mediadores_routes import mediadores_router
 from auth_routes import auth_router
