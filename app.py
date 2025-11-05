@@ -52,4 +52,4 @@ def parse_origins():
 app = FastAPI(title="MEDIAZION Backend", version="3.2.1")
 
 # Asegura esquema (usa DATABASE_URL de Render)
-ensure();
+ensure_db();
