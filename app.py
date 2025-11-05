@@ -23,6 +23,11 @@ except Exception:
     news_router = None
 
 try:
+    from auth_routes import auth_router
+except Exception:
+    auth_routes = None
+
+try:
     from upload_routes import upload_router
 except Exception:
     upload_router = None
@@ -94,6 +99,9 @@ if mediadores_router is not None:
 
 if news_router is not None:
     app.include_router(news_router, prefix="", tags=["news"])
+
+if auth_router is not None:
+    app.include_router(auth_router)
 
 if upload_router is not None:
     app.include_router(upload_router, prefix="", tags=["uploads"])
