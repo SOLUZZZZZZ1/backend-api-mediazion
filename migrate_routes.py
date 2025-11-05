@@ -1,4 +1,4 @@
-# migrate_routes.py — endpoint temporal para migrar columnas necesarias
+# migrate_routes.py — migración mínima para columnas nuevas
 import os
 from fastapi import APIRouter, Header, HTTPException
 from db import pg_conn
@@ -6,59 +6,21 @@ from db import pg_conn
 router = APIRouter(prefix="/admin/migrate", tags=["admin-migrate"])
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or "8354Law18354Law1@"
 
-SQL = """
-CREATE TABLE IF NOT EXISTS mediadores (
-  id SERIAL PRIMARY KEY,
-  name TEXT,
-  email TEXT UNIQUE,
-  phone TEXT,
-  provincia TEXT,
-  especialidad TEXT,
-  dni_cif TEXT,
-  tipo TEXT,
-  approved BOOLEAN DEFAULT TRUE,
-  status TEXT DEFAULT 'active',
-  subscription_status TEXT DEFAULT 'none',
-  trial_used BOOLEAN DEFAULT FALSE,
-  trial_start TIMESTAMP NULL,
-  password_hash TEXT,
-  subscription_id TEXT,
-  created_at TIMESTAMP DEFAULT NOW()
-);
-
-ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS phone TEXT;
-ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS provincia TEXT;
-ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS especialidad TEXT;
+SQL_ADD_COLS = """
 ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS dni_cif TEXT;
 ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS tipo TEXT;
 ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS password_hash TEXT;
-ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS subscription_id TEXT;
-ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS approved BOOLEAN DEFAULT TRUE;
-ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
-ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS subscription_status TEXT DEFAULT 'none';
-ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS trial_used BOOLEAN DEFAULT FALSE;
-ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS trial_start TIMESTAMP NULL;
-ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
-
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_indexes WHERE tablename='mediadores' AND indexname='mediadores_email_key'
-  ) THEN
-    CREATE UNIQUE INDEX mediadores_email_key ON mediadores (LOWER(email));
-  END IF;
-END$$;
 """
 
-@router.post("/db")
-def migrate_db(x_admin_token: str | None = Header(None)):
+@router.post("/add_cols")
+def add_cols(x_admin_token: str | None = Header(None)):
     if x_admin_token != ADMIN_TOKEN:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+        raise HTTPException(401, "Unauthorized")
     try:
         with pg_conn() as cx:
             with cx.cursor() as cur:
-                cur.execute(SQL)
+                cur.execute(SQL_ADD_COLS)
             cx.commit()
-        return {"ok": True, "message": "Migración ejecutada correctamente"}
+        return {"ok": True, "message": "Columnas añadidas (dni_cif, tipo, password_hash)"}
     except Exception as e:
         raise HTTPException(500, f"Migration error: {e}")
