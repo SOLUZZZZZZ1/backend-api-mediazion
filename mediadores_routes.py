@@ -1,4 +1,4 @@
-# mediadores_routes.py — Alta completa + clave temporal + DNI/CIF + soft-fail email
+# mediadores_routes.py — Alta de Mediadores: DNI/CIF + tipo + clave temporal (bcrypt) + commit seguro + soft-fail email
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, EmailStr
 from db import pg_conn
@@ -25,40 +25,44 @@ def register(data: MediadorIn):
     email = data.email.lower().strip()
     name  = data.name.strip()
 
-    # Comprobar si ya existe
+    # Bloqueo de duplicados
     with pg_conn() as cx:
         with cx.cursor() as cur:
-            cur.execute("SELECT id FROM mediadores WHERE email = LOWER(%s)", (email,))
+            cur.execute("SELECT id FROM mediadores WHERE email=LOWER(%s)", (email,))
             if cur.fetchone():
                 raise HTTPException(409, "Este correo ya está registrado")
 
-    # Generar contraseña temporal y hash
+    # Generar clave temporal y hash bcrypt
     temp_password = secrets.token_urlsafe(6)[:10]
     pwd_hash = bcrypt.hashpw(temp_password.encode("utf-8"), bcrypt.gensalt()).decode()
 
-    # Insertar registro
+    # INSERT con commit seguro (commit fuera del cursor)
     with pg_conn() as cx:
         with cx.cursor() as cur:
             cur.execute("""
                 INSERT INTO mediadores (name,email,phone,provincia,especialidad,
+                                        dni_cif,tipo,
                                         approved,status,subscription_status,trial_used,
                                         password_hash)
-                VALUES (%s, LOWER(%s), %s, %s, %s, TRUE, 'active', 'none', FALSE, %s)
-            """, (name, email, data.phone, data.provincia, data.especialidad, pwd_hash))
-            cx.commit()
+                VALUES (%s, LOWER(%s), %s, %s, %s,
+                        %s, %s,
+                        TRUE, 'active', 'none', FALSE,
+                        %s)
+            """, (name, email, data.phone, data.provincia, data.especialidad,
+                  data.dni_cif.strip(), data.tipo.strip(), pwd_hash))
+        cx.commit()
 
-    # Emails
+    # Correos (no rompen el alta si fallan)
     user_html = f"""
     <div style="font-family:system-ui,Segoe UI,Roboto,Arial">
       <p>Hola {name},</p>
       <p>Tu alta como mediador en <strong>MEDIAZION</strong> se ha registrado correctamente.</p>
-      <p>Tipo: {data.tipo} &nbsp;&nbsp; DNI/CIF: {data.dni_cif}</p>
+      <p><strong>Tipo:</strong> {data.tipo} &nbsp;&nbsp; <strong>DNI/CIF:</strong> {data.dni_cif}</p>
       <p><strong>Contraseña temporal:</strong> {temp_password}</p>
-      <p>Puedes acceder al panel desde la web y cambiarla una vez dentro.</p>
+      <p>Puedes acceder a tu panel y cambiarla una vez dentro.</p>
       <p>Un saludo,<br/>Equipo MEDIAZION</p>
     </div>
     """
-
     info_html = f"""
     <div style="font-family:system-ui,Segoe UI,Roboto,Arial">
       <p>Nuevo alta de mediador:</p>
