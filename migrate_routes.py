@@ -1,10 +1,9 @@
-# migrate_routes.py — ejecuta la migración de la tabla mediadores (solo admin)
+# migrate_routes.py — endpoint temporal para migrar columnas necesarias
+import os
 from fastapi import APIRouter, Header, HTTPException
 from db import pg_conn
-import os
 
 router = APIRouter(prefix="/admin/migrate", tags=["admin-migrate"])
-
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or "8354Law18354Law1@"
 
 SQL = """
@@ -15,11 +14,14 @@ CREATE TABLE IF NOT EXISTS mediadores (
   phone TEXT,
   provincia TEXT,
   especialidad TEXT,
+  dni_cif TEXT,
+  tipo TEXT,
   approved BOOLEAN DEFAULT TRUE,
   status TEXT DEFAULT 'active',
   subscription_status TEXT DEFAULT 'none',
   trial_used BOOLEAN DEFAULT FALSE,
   trial_start TIMESTAMP NULL,
+  password_hash TEXT,
   subscription_id TEXT,
   created_at TIMESTAMP DEFAULT NOW()
 );
@@ -27,6 +29,9 @@ CREATE TABLE IF NOT EXISTS mediadores (
 ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS phone TEXT;
 ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS provincia TEXT;
 ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS especialidad TEXT;
+ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS dni_cif TEXT;
+ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS tipo TEXT;
+ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS password_hash TEXT;
 ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS subscription_id TEXT;
 ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS approved BOOLEAN DEFAULT TRUE;
 ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
