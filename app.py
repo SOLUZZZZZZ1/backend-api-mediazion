@@ -1,69 +1,81 @@
-# app.py — MEDIAZION backend (FastAPI + PostgreSQL + Stripe + Auth + Admin)
+# app.py — MEDIAZION backend (FastAPI + PostgreSQL + Stripe + Admin utils)
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.staticfiles import StaticFiles
 
-from utils_pg import ensure_db
+# --- DB init (PostgreSQL)
+from utils_pg import import_db as _db  # if your module is utils_pg and exposes ensure_db()
+ensure_db = getattr(_db, "ensure_db", None) or getattr(_db, "ensure_db", None)
+if ensure_db is None:
+    # Fallback if import alias not needed
+    from utils_pg import ensure_db as _ensure
+    ensure_db = _ensure
 
-# Routers principales (estos YA llevan su propio prefix en el archivo)
-from admin_routes import admin_router               # prefix="/admin"
-from contact_routes import contact_router           # prefix=""
-from mediadores_routes import mediadores_router     # prefix="/mediadores"
-from auth_routes import auth_router                 # prefix="/auth"
+# --- Routers (required)
+from admin_routes import admin_router
+from contact_routes import contact_router
+from mediadores_module import mediadores_routes as mediadores_router  # if your file is mediadores_routes.py with "mediadores_router"
+from auth_routes import auth_router
 
-# Opcionales
+# If your mediadores router is defined as "mediadores_router", re-alias here:
 try:
-    from news_routes import news_router             # prefix=""
+    from mediadores_routes import mediadores_router as _m_router
+    mediadores_router = _m_router
+except Exception:
+    pass
+
+# --- Optional routers
+try:
+    from news_routes import news_router
 except Exception:
     news_router = None
 
 try:
-    from upload_routes import upload_router         # prefix="/upload" (o lo que tengas)
+    from upload_routes import upload_router
 except Exception:
     upload_router = None
 
-# Stripe (el router DEBE exponer prefix="/stripe" dentro de stripe_routes.py)
 try:
-    from stripe_routes import router as stripe_router  # prefix="/stripe" DENTRO del archivo
+    from stripe_routes import router as stripe_router
 except Exception:
     stripe_router = None
 
-# Utilidades admin y migración (opcionales)
 try:
-    from admin_manage_routes import admin_manage    # tiene su propio prefix
+    from admin_manage_routes import admin_manage
 except Exception:
     admin_manage = None
 
 try:
-    from db_routes import db_router                 # si existe
+    from db_routes import db_router
 except Exception:
     db_router = None
 
 try:
-    from migrate_routes import router as migrate_router  # temporal
+    from migrate_routes import router as migrate_router
 except Exception:
     migrate_router = None
 
 
-def parse_origins():
+def parse_origins() -> list[str]:
     raw = os.getenv("ALLOWED_ORIGINS", "https://mediazion.eu,https://www.mediazion.eu")
     return [o.strip() for o in raw.split(",") if o.strip()]
 
 
 app = FastAPI(title="MEDIAZION Backend", version="3.2.1")
 
-# Asegura esquema
-ensure_db()
+# Init DB
+if callable(ensure_db):
+    ensure_db()
 
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=parse_origins(),
+    allow_origins=tuple(parse_origins()),
     allow_origin_regex=r"https://.*\.vercel\.app$",
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
 
 # Static
@@ -75,21 +87,26 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 def health():
     return {"ok": True, "service": "backend-api-mediazion-1", "version": "3.2.1"}
 
-# Monta routers SIN repetir prefijos (ya vienen dentro de cada archivo)
-app.include_router(admin_router)        # ya trae prefix="/admin"
-app.include_router(contact_router)      # ""
-app.include_router(mediadores_router)   # "/mediadores"
-app.include_router(auth_router)         # "/auth"
+# Routers
+app.include_router(admin_router,      prefix="/",          tags=["admin"])
+app.include_router(contact_router,    prefix="",           tags=["contact"])
+app.include_router(mediadores_router, prefix="",           tags=["mediadores"])
+app.include_router(auth_router,       prefix="",           tags=["auth"])
 
-if news_router:
-    app.include_router(news_router)     # según tu archivo
-if upload_router:
-    app.include_router(upload_router)   # según tu archivo
-if stripe_router:
-    app.include_router(stripe_router)   # **debe exponer "/stripe/..." desde dentro**
-if admin_manage:
-    app.include_router(admin_manage)    # ya trae su prefix (p.ej. "/admin/mediadores")
-if db_router:
-    app.include_router(db_router)       # si existe
-if migrate_router:
-    app.include_router(migrate_router)  # temporal
+if news_router is not None:
+    app.include_router(news_router,   prefix="",           tags=["news"])
+
+if upload_router is not None:
+    app.include_router(upload_router, prefix="",           tags=["uploads"])
+
+if stripe_router is not None:
+    app.include_router(stripe_router, prefix="",           tags=["stripe"])  # exposes /stripe/...
+
+if admin_manage is not None:
+    app.include_router(admin_manage)  # /admin/mediadores/* (TEMPORAL – remove later)
+
+if db_router is not None:
+    app.include_router(db_router,     prefix="",           tags=["db"])
+
+if migrate_router is not None:  # TEMPORAL – remove when done
+    app.include_router(migrate_router, prefix="",          tags=["admin-migrate"])
