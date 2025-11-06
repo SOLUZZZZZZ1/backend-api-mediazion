@@ -1,4 +1,4 @@
-# mediadores_routes.py — Alta completa + DNI/CIF + clave temporal (bcrypt) + trial 7 días + correo con enlaces
+# mediadores_routes.py — Alta completa + DNI/CIF + clave temporal + trial 7 días + /status
 from datetime import datetime, timedelta, timezone
 import secrets
 import bcrypt
@@ -10,9 +10,9 @@ from contact_routes import _send_mail, MAIL_TO_DEFAULT
 
 mediadores_router = APIRouter(prefix="/mediadores", tags=["mediadores"])
 
-TRAVEL_DAYS = 7  # días de prueba PRO
+TRIAL_DAYS = 7
 PANEL_URL = "https://mediazion.eu/panel-mediador"
-CTA_SUBSCRIBE_URL = "https://mediazion.eu/suscripcion/ok?start=1"  # CTA “Activar suscripción”
+CTA_SUBSCRIBE_URL = "https://mediazion.eu/suscripcion/ok?start=1"
 
 class MediadorIn(BaseModel):
     name: str
@@ -21,7 +21,7 @@ class MediadorIn(BaseModel):
     provincia: str
     especialidad: str
     dni_cif: str
-    tipo: str                  # "física" | "empresa"
+    tipo: str
     accept: bool
 
 @mediadores_router.post("/register")
@@ -32,22 +32,18 @@ def register(data: MediadorIn):
     email = data.email.lower().strip()
     name  = data.name.strip()
 
-    # Bloqueo de duplicados
     with pg_conn() as cx:
         with cx.cursor() as cur:
             cur.execute("SELECT id FROM mediadores WHERE email = LOWER(%s)", (email,))
             if cur.fetchone():
-                raise Exception("DUPLICATE_EMAIL")
+                raise HTTPException(409, "Este correo ya está registrado")
 
-    # Generar contraseña temporal + hash bcrypt
     temp_password = secrets.token_urlsafe(6)[:10]
     pwd_hash = bcrypt.hashpw(temp_password.encode("utf-8"), bcrypt.gensalt()).decode()
 
-    # Alta en modo PRO (trialing) durante 7 días
     trial_start = datetime.now(timezone.utc)
-    trial_end   = trial_start + timedelta(days=TRAVEL_DAYS)
+    trial_end   = trial_start + timedelta(days=TRIAL_DAYS)
 
-    # Insert y commit antes de enviar correos
     with pg_conn() as cx:
         with cx.cursor() as cur:
             cur.execute(
@@ -75,7 +71,6 @@ def register(data: MediadorIn):
             )
         cx.commit()
 
-    # --- Correo al usuario (con contraseña + enlace + CTA) ---
     user_html = f"""
     <div style="font-family:system-ui,Segoe UI,Roboto,Arial">
       <p>Hola {name},</p>
@@ -92,14 +87,10 @@ def register(data: MediadorIn):
            Activar suscripción definitiva
         </a>
       </p>
-      <p style="margin-top:8px;font-size:12px;opacity:.7">
-        También puedes activar tu suscripción desde tu Panel de Mediador en cualquier momento.
-      </p>
       <p>Un saludo,<br/>Equipo MEDIAZION</p>
     </div>
     """
 
-    # Correo interno
     info_html = f"""
     <div style="font-family:system-ui,Segoe UI,Roboto,Arial">
       <p>Nuevo alta de mediador:</p>
@@ -120,7 +111,22 @@ def register(data: MediadorIn):
         _send_mail(email, "Alta registrada · Acceso PRO 7 días · MEDIAZION", user_html, name)
         _send_mail(MAIL_TO_DEFAULT, f"[Alta Mediador] {name} <{email}>", info_html, "MEDIAZION")
     except Exception:
-        # Soft-fail: no romper el alta si el SMTP cae
         pass
 
     return {"ok": True, "message": "Alta realizada. Revisa tu correo con la contraseña temporal y el enlace al panel."}
+
+@mediadores_router.get("/status")
+def status(email: str):
+    """Devuelve estado de suscripción por email para pintar el CTA del panel."""
+    e = email.lower().strip()
+    with pg_conn() as cx:
+        with cx.cursor() as cur:
+            cur.execute("""
+                SELECT subscription_status, status
+                  FROM mediadores
+                 WHERE email = LOWER(%s)
+            """, (e,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(404, "No encontrado")
+            return {"subscription_status": row[0], "status": row[1]}

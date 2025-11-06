@@ -3,10 +3,11 @@ import os, json
 from fastapi import APIRouter, HTTPException, Request
 from db import pg_conn
 import stripe
-from stripe.error import StripeError  # ← IMPORT EXPLÍCITO
+from stripe.error import StripeError  # import explícito para capturar excepciones
 
 router = APIRouter(tags=["stripe"])
 
+# --- Config ---
 STRIPE_SECRET  = os.getenv("STRIPE_SECRET")
 PRICE_ID       = os.getenv("STRIPE_PRICE_ID")
 WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
@@ -17,6 +18,7 @@ if not STRIPE_SECRET:
     raise RuntimeError("STRIPE_SECRET no está definido")
 stripe.api_key = STRIPE_SECRET
 
+# --- Helpers BD ---
 def _row_to_dict(cur, row):
     if not row: return None
     cols = [d[0] for d in cur.description]
@@ -44,12 +46,36 @@ def set_subscription(email: str, sub_id: str, subs_status: str):
             """, (sub_id, subs_status, subs_status, email))
         cx.commit()
 
+# --- Email activación ---
+def _send_activation_email(email: str, status: str, sub_id: str):
+    try:
+        from contact_routes import _send_mail, MAIL_TO_DEFAULT
+        html = f"""
+        <div style="font-family:system-ui,Segoe UI,Roboto,Arial">
+          <p>¡Suscripción {status}!</p>
+          <p>Tu suscripción en <strong>MEDIAZION</strong> está ahora <strong>{status.upper()}</strong>.</p>
+          <p>ID de suscripción: <code>{sub_id}</code></p>
+          <p><a href="https://mediazion.eu/panel-mediador"
+                style="display:inline-block;background:#0ea5e9;color:#fff;padding:10px 14px;border-radius:10px;text-decoration:none">
+                Ir a mi panel
+             </a></p>
+        </div>
+        """
+        _send_mail(email, "¡Suscripción activada · MEDIAZION!", html, email)
+        _send_mail(MAIL_TO_DEFAULT, f"[Suscripción {status}] {email}", html, "MEDIAZION")
+    except Exception as e:
+        print("Error enviando correo de activación:", e)
+
+# --- Subscribe: botón "Activar plan PRO" ---
+# Acepta ambas rutas por compatibilidad (sin prefijo y con /stripe)
 @router.post("/subscribe")
+@router.post("/stripe/subscribe")
 def subscribe(payload: dict):
     email = (payload.get("email") or "").strip().lower()
     price = payload.get("priceId") or PRICE_ID
     if not email:  raise HTTPException(400, "Falta email")
     if not price:  raise HTTPException(500, "STRIPE_PRICE_ID no configurado")
+
     if not get_mediator(email):
         raise HTTPException(400, "Completa el alta antes de suscribirte.")
 
@@ -59,13 +85,14 @@ def subscribe(payload: dict):
             customer_email=email,
             line_items=[{"price": price, "quantity": 1}],
             allow_promotion_codes=True,
-            success_url=SUCCESS_URL,  # debe incluir {CHECKOUT_SESSION_ID}
+            success_url=SUCCESS_URL,  # importante: incluye {CHECKOUT_SESSION_ID}
             cancel_url=CANCEL_URL,
         )
         return {"url": session["url"]}
     except StripeError as e:
         raise HTTPException(400, f"Stripe error: {e.user_message or str(e)}")
 
+# --- Webhook: checkout.session.completed + customer.subscription.* ---
 @router.post("/stripe/webhook")
 async def webhook(req: Request):
     payload = await req.body()
@@ -78,6 +105,7 @@ async def webhook(req: Request):
     typ = event.get("type")
     obj = event.get("data", {}).get("object", {})
 
+    # checkout.session.completed → enlaza email/sub y confirma status
     if typ == "checkout.session.completed":
         try:
             email = (obj.get("customer_details") or {}).get("email") or ""
@@ -98,6 +126,7 @@ async def webhook(req: Request):
         except Exception as e:
             print("Error en checkout.session.completed:", e)
 
+    # customer.subscription.created/updated/deleted → sincroniza estado
     if typ in ("customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"):
         try:
             sub_id = obj.get("id")
@@ -116,6 +145,7 @@ async def webhook(req: Request):
 
     return {"received": True}
 
+# --- Confirm: desde /suscripcion/ok?session_id=... (por si el webhook tarda) ---
 @router.post("/stripe/confirm")
 def confirm(payload: dict):
     session_id = (payload.get("session_id") or "").strip()
@@ -141,22 +171,3 @@ def confirm(payload: dict):
         raise HTTPException(500, f"Confirm error: {e}")
 
     return {"ok": True, "email": email, "subscription_id": sub_id, "subscription_status": status}
-
-def _send_activation_email(email: str, status: str, sub_id: str):
-    try:
-        from contact_routes import _send_mail, MAIL_TO_DEFAULT
-        html = f"""
-        <div style="font-family:system-ui,Segoe UI,Roboto,Arial">
-          <p>¡Suscripción {status}!</p>
-          <p>Tu suscripción en <strong>MEDIAZION</strong> está ahora <strong>{status.upper()}</strong>.</p>
-          <p>ID de suscripción: <code>{sub_id}</code></p>
-          <p><a href="https://mediazion.eu/panel-mediador"
-                style="display:inline-block;background:#0ea5e9;color:#fff;padding:10px 14px;border-radius:10px;text-decoration:none">
-                Ir a mi panel
-             </a></p>
-        </div>
-        """
-        _send_mail(email, "¡Suscripción activada · MEDIAZION!", html, email)
-        _send_mail(MAIL_TO_DEFAULT, f"[Suscripción {status}] {email}", html, "MEDIAZION")
-    except Exception as e:
-        print("Error enviando correo de activación:", e)
