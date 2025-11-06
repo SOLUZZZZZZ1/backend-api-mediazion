@@ -1,27 +1,27 @@
-# stripe_routes.py — Subscribe + Webhook + Confirm (envía correo de activación)
+# stripe_routes.py — Subscribe + Webhook + Confirm
 import os, json
 from fastapi import APIRouter, HTTPException, Request
 from db import pg_conn
 import stripe
-from stripe.error import StripeError  # import explícito
+from stripe.error import StripeError  # capturar excepciones de Stripe
 
-router = APIRouter(tags=["stripe"])
+# EXPONE /stripe/...
+router = APIRouter(prefix="/stripe", tags=["stripe"])
 
-# --- Config de entorno (sin fallar en import-time) ---
-STRIPE_SECRET  = os.getenv("STRIPE_SECRET", "").strip()
+# Config de entorno (no fallar al importar)
+STRIPE_SECRET  = (os.getenv("STRIPE_SECRET") or "").strip()
 PRICE_ID       = (os.getenv("STRIPE_PRICE_ID") or "").strip()
 WEBHOOK_SECRET = (os.getenv("STRIPE_WEBHOOK_SECRET") or "").strip()
 SUCCESS_URL    = os.getenv("SUB_SUCCESS_URL", "https://mediazion.eu/suscripcion/ok?session_id={CHECKOUT_SESSION_ID}")
 CANCEL_URL     = os.getenv("SUB_CANCEL_URL",  "https://mediazion.eu/suscripcion/cancel")
 
 def _require_stripe():
-    """Asegura la clave antes de cada operación (evita fallar al importar)."""
-    global STRIPE_SECRET
+    """Asegura clave y setea api_key antes de cada operación."""
     if not STRIPE_SECRET:
-        raise HTTPException(500, "Stripe no está configurado (faltan STRIPE_SECRET/STRIPE_PRICE_ID)")
+        raise HTTPException(500, "Stripe no está configurado (falta STRIPE_SECRET)")
     stripe.api_key = STRIPE_SECRET
 
-# --- Helpers BD ---
+# Helpers BD
 def _row_to_dict(cur, row):
     if not row: return None
     cols = [d[0] for d in cur.description]
@@ -32,7 +32,7 @@ def get_mediator(email: str):
         with cx.cursor() as cur:
             cur.execute("""
                 SELECT id, subscription_id, subscription_status, trial_used
-                  FROM mediadores WHERE email = LOWER(%s)
+                FROM mediadores WHERE email=LOWER(%s)
             """, (email,))
             return _row_to_dict(cur, cur.fetchone())
 
@@ -68,18 +68,19 @@ def _send_activation_email(email: str, status: str, sub_id: str):
     except Exception as e:
         print("Error enviando correo de activación:", e)
 
-# --- Subscribe: botón "Activar plan PRO" ---
-# Acepta ambas rutas por compatibilidad
+# 1) Botón “Activar plan PRO” → abre Checkout
 @router.post("/subscribe")
-@router.post("/stripe/subscribe")
 def subscribe(payload: dict):
     _require_stripe()
     email = (payload.get("email") or "").strip().lower()
     price = (payload.get("priceId") or PRICE_ID).strip()
-    if not email:  raise HTTPException(400, "Falta email")
-    if not price:  raise HTTPException(500, "STRIPE_PRICE_ID no configurado")
+    if not email:
+        raise HTTPException(400, "Falta email")
+    if not price:
+        raise HTTPException(500, "STRIPE_PRICE_ID no configurado")
     if not get_mediator(email):
         raise HTTPException(400, "Completa el alta antes de suscribirte.")
+
     try:
         session = stripe.checkout.Session.create(
             mode="subscription",
@@ -93,11 +94,11 @@ def subscribe(payload: dict):
     except StripeError as e:
         raise HTTPException(400, f"Stripe error: {e.user_message or str(e)}")
 
-# --- Webhook ---
-@router.post("/stripe/webhook")
+# 2) Webhook: sincroniza estado tras checkout / cambios de subscripción
+@router.post("/webhook")
 async def webhook(req: Request):
-    payload = await req.body()
     _require_stripe()
+    payload = await req.body()
     try:
         event = (stripe.Webhook.construct_event(payload, req.headers.get("Stripe-Signature"), WEBHOOK_SECRET)
                  if WEBHOOK_SECRET else json.loads(payload))
@@ -118,7 +119,7 @@ async def webhook(req: Request):
             status = "active"
             try:
                 s = stripe.Subscription.retrieve(sub_id)
-                status = "trialing" if s.get("status") == "trialing" else ("active" if s.get("status") == "active" else s.get("status") or "active")
+                status = "trialing" if s.get("status") == "trialing" else ("active" if s.get("status") == "active" else (s.get("status") or "active"))
             except Exception:
                 pass
             if email and sub_id:
@@ -131,7 +132,7 @@ async def webhook(req: Request):
         try:
             sub_id = obj.get("id")
             status_raw = obj.get("status")
-            status = "trialing" if status_raw == "trialing" else ("active" if status_raw == "active" else status_raw or "active")
+            status = "trialing" if status_raw == "trialing" else ("active" if status_raw == "active" else (status_raw or "active"))
             email = obj.get("customer_email") or ""
             if not email and obj.get("customer"):
                 c = stripe.Customer.retrieve(obj["customer"])
@@ -145,8 +146,29 @@ async def webhook(req: Request):
 
     return {"received": True}
 
-# --- Confirm: desde /suscripcion/ok?session_id=... ---
-@router.post("/stripe/confirm")
+# 3) Confirmación manual desde /suscripcion/ok (por si el webhook tarda)
+@router.post("/confirm")
 def confirm(payload: dict):
     _require_stripe()
-    session
+    session_id = (payload.get("session_id") or "").strip()
+    if not session_id:
+        raise HTTPException(400, "Falta session_id")
+    try:
+        sess = stripe.checkout.Session.retrieve(session_id, expand=["customer","subscription"])
+        email = (sess.get("customer_details") or {}).get("email") or ""
+        if not email and sess.get("customer"):
+            c = stripe.Customer.retrieve(sess["customer"])
+            email = (c.get("email") or "")
+        if not email:
+            raise HTTPException(400, "No se encontró email en la sesión")
+        sub = sess.get("subscription")
+        sub_id = sub["id"] if isinstance(sub, dict) else sub
+        s = stripe.Subscription.retrieve(sub_id)
+        status = "trialing" if s.get("status") == "trialing" else ("active" if s.get("status") == "active" else (s.get("status") or "active"))
+        set_subscription(email.lower(), sub_id, status)
+        _send_activation_email(email, status, sub_id)
+        return {"ok": True, "email": email, "subscription_id": sub_id, "subscription_status": status}
+    except StripeError as e:
+        raise HTTPException(400, f"Stripe error: {e.user_message or str(e)}")
+    except Exception as e:
+        raise HTTPException(500, f"Confirm error: {e}")
