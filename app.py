@@ -5,12 +5,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.staticfiles import StaticFiles
 
 # --- DB init (PostgreSQL)
-from utils_pg import import_db as _db  # if your module is utils_pg and exposes ensure_db()
-ensure_db = getattr(_db, "ensure_db", None) or getattr(_db, "ensure_db", None)
-if ensure_db is None:
-    # Fallback if import alias not needed
-    from utils_pg import ensure_db as _ensure
-    ensure_db = _ensure
+try:
+    from utils_pg import ensure_db  # utils_pg exposes ensure_db()
+except Exception:
+    ensure_db = None
 
 # --- Routers (required)
 from admin_routes import admin_router
@@ -62,11 +60,15 @@ def parse_origins() -> list[str]:
     return [o.strip() for o in raw.split(",") if o.strip()]
 
 
-app = FastAPI(title="MEDIAZION Backend", version="3.2.2")
+app = FastAPI(title="MEDIAZION Backend", version="3.2.3")
 
 # Init DB
 if callable(ensure_db):
-    ensure_db()
+    try:
+        ensure_db()
+    except Exception:
+        # No bloquear arranque por fallo suave de bootstrap
+        pass
 
 # CORS
 app.add_middleware(
@@ -82,15 +84,15 @@ app.add_middleware(
 os.makedirs("uploads", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
-# Health (dejamos /health en raíz para pruebas y monitors)
+# Health (dejamos /health en raíz para probes/monitors)
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "backend-api-mediazion-1", "version": "3.2.2"}
+    return {"ok": True, "service": "backend-api-mediazion-1", "version": "3.2.3"}
 
 # ------ API prefix alineado con el frontend ------
 API_PREFIX = "/api"
 
-# Routers (ahora todos bajo /api/*)
+# Routers (todos bajo /api/*)
 app.include_router(admin_router,      prefix=API_PREFIX, tags=["admin"])
 app.include_router(contact_router,    prefix=API_PREFIX, tags=["contact"])
 app.include_router(mediadores_router, prefix=API_PREFIX, tags=["mediadores"])
@@ -103,15 +105,14 @@ if upload_router is not None:
     app.include_router(upload_router, prefix=API_PREFIX, tags=["uploads"])
 
 if stripe_router is not None:
-    # Expondrá /api/stripe/subscribe, /api/stripe/confirm, /api/stripe/webhook
+    # /api/stripe/subscribe, /api/stripe/confirm, /api/stripe/webhook
     app.include_router(stripe_router, prefix=API_PREFIX, tags=["stripe"])
 
 if admin_manage is not None:
-    # /api/admin/mediadores/* (temporal)
     app.include_router(admin_manage, prefix=API_PREFIX)
 
 if db_router is not None:
     app.include_router(db_router,     prefix=API_PREFIX, tags=["db"])
 
-if migrate_router is not None:  # TEMPORAL – remove when done
+if migrate_router is not None:
     app.include_router(migrate_router, prefix=API_PREFIX, tags=["admin-migrate"])
