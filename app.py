@@ -62,7 +62,7 @@ def parse_origins() -> list[str]:
     return [o.strip() for o in raw.split(",") if o.strip()]
 
 
-app = FastAPI(title="MEDIAZION Backend", version="3.2.1")
+app = FastAPI(title="MEDIAZION Backend", version="3.2.2")
 
 # Init DB
 if callable(ensure_db):
@@ -82,31 +82,36 @@ app.add_middleware(
 os.makedirs("uploads", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
-# Health
+# Health (dejamos /health en raíz para pruebas y monitors)
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "backend-api-mediazion-1", "version": "3.2.1"}
+    return {"ok": True, "service": "backend-api-mediazion-1", "version": "3.2.2"}
 
-# Routers
-app.include_router(admin_router,      prefix="/",          tags=["admin"])
-app.include_router(contact_router,    prefix="",           tags=["contact"])
-app.include_router(mediadores_router, prefix="",           tags=["mediadores"])
-app.include_router(auth_router,       prefix="",           tags=["auth"])
+# ------ API prefix alineado con el frontend ------
+API_PREFIX = "/api"
+
+# Routers (ahora todos bajo /api/*)
+app.include_router(admin_router,      prefix=API_PREFIX, tags=["admin"])
+app.include_router(contact_router,    prefix=API_PREFIX, tags=["contact"])
+app.include_router(mediadores_router, prefix=API_PREFIX, tags=["mediadores"])
+app.include_router(auth_router,       prefix=API_PREFIX, tags=["auth"])
 
 if news_router is not None:
-    app.include_router(news_router,   prefix="",           tags=["news"])
+    app.include_router(news_router,   prefix=API_PREFIX, tags=["news"])
 
 if upload_router is not None:
-    app.include_router(upload_router, prefix="",           tags=["uploads"])
+    app.include_router(upload_router, prefix=API_PREFIX, tags=["uploads"])
 
 if stripe_router is not None:
-    app.include_router(stripe_router, prefix="",           tags=["stripe"])  # exposes /stripe/...
+    # Expondrá /api/stripe/subscribe, /api/stripe/confirm, /api/stripe/webhook
+    app.include_router(stripe_router, prefix=API_PREFIX, tags=["stripe"])
 
 if admin_manage is not None:
-    app.include_router(admin_manage)  # /admin/mediadores/* (TEMPORAL – remove later)
+    # /api/admin/mediadores/* (temporal)
+    app.include_router(admin_manage, prefix=API_PREFIX)
 
 if db_router is not None:
-    app.include_router(db_router,     prefix="",           tags=["db"])
+    app.include_router(db_router,     prefix=API_PREFIX, tags=["db"])
 
 if migrate_router is not None:  # TEMPORAL – remove when done
-    app.include_router(migrate_router, prefix="",          tags=["admin-migrate"])
+    app.include_router(migrate_router, prefix=API_PREFIX, tags=["admin-migrate"])

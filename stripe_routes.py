@@ -1,10 +1,10 @@
 # stripe_routes.py — /stripe/subscribe + /stripe/confirm + /stripe/webhook
-import os, json
+import os
 from fastapi import APIRouter, HTTPException, Request
 from db import pg_conn
 import stripe
 
-router = APIRouter()  # we’ll register with prefix="" and put /stripe/* in paths
+router = APIRouter()  # we'll register with prefix="" and put /stripe/* in paths
 
 STRIPE_SECRET  = os.getenv("STRIPE_SECRET")
 PRICE_ID       = os.getenv("STRIPE_PRICE_ID")
@@ -13,10 +13,11 @@ SUCCESS_URL    = os.getenv("SUB_SUCCESS_URL", "https://mediazion.eu/suscripcion/
 CANCEL_URL     = os.getenv("SUB_CANCEL_URL", "https://mediazion.eu/suscripcion/cancel")
 
 if not STRIPE_SECRET:
-    raise RuntimeError("STRIPE_SECRET not configured")
+    raise RuntimeError("STRIPE_SECRET not configured")  # Explicit for envs without secret
 
-stripe.api = stripe
+# Stripe init
 stripe.api_key = STRIPE_SECRET
+
 
 def _row_to_dict(cur, row):
     if not row:
@@ -24,28 +25,37 @@ def _row_to_dict(cur, row):
     cols = [d[0] for d in cur.description]
     return {cols[i]: row[i] for i in range(len(cols))}
 
+
 def _get_mediator(email: str):
     with pg_conn() as cx:
         with cx.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT id, email, subscription_id, subscription_status, trial_used
                 FROM mediadores
                 WHERE email = LOWER(%s)
-            """, (email,))
+                """,
+                (email,),
+            )
             return _row_to_dict(cur, cur.fetchone())
+
 
 def _set_subscription(email: str, sub_id: str, subs_status: str):
     with pg_conn() as cx:
         with cx.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 UPDATE mediadores
                    SET subscription_id=%s,
                        subscription_status=%s,
                        trial_used = CASE WHEN %s IN ('trialing','active') THEN TRUE ELSE trial_used END,
                        status='active'
                  WHERE email = LOWER(%s)
-            """, (sub_id, subs_status, subs_status, email))
+                """,
+                (sub_id, subs_status, subs_status, email),
+            )
         cx.commit()
+
 
 def _send_activation(email: str, sub_id: str, subs_status: str):
     try:
@@ -68,13 +78,14 @@ def _send_activation(email: str, sub_id: str, subs_status: str):
         # soft-fail, no 500
         pass
 
+
 @router.post("/stripe/subscribe")
 def subscribe(payload: dict):
     email = (payload.get("email") or "").strip().lower()
     if not email:
         raise HTTPException(400, "Falta email")
     if not PRICE_ID:
-        raise UnboundLocalError("Falta STRIPE_PRICE_ID")
+        raise HTTPException(500, "Falta STRIPE_PRICE_ID en variables de entorno")
 
     if not _get_mediator(email):
         raise HTTPException(400, "Completa el alta antes de suscribirte.")
@@ -86,11 +97,14 @@ def subscribe(payload: dict):
             line_items=[{"price": PRICE_ID, "quantity": 1}],
             success_url=SUCCESS_URL,  # must contain {CHECKOUT_SESSION_ID}
             cancel_url=CANCEL_URL,
-            allow_promotions=True
+            allow_promotion_codes=True,
         )
         return {"url": session["url"]}
     except stripe.error.StripeError as e:
-        raise HTTPException(400, f"Stripe error: {e.user_message or str(e)}")
+        # user_message solo aparece en algunos errores
+        detail = getattr(e, "user_message", None) or str(e)
+        raise HTTPException(400, f"Stripe error: {detail}")
+
 
 @router.post("/stripe/confirm")
 def confirm(payload: dict):
@@ -112,22 +126,22 @@ def confirm(payload: dict):
         sub_id = sub["id"] if isinstance(sub, dict) else sub
         s = stripe.Subscription.retrieve(sub_id)
         status = s.get("status") or "active"
-        subs = "active" if status == "active" else ("merging" if status == "trialing" else status)
+        subs = "active" if status == "active" else ("trialing" if status == "trialing" else status)
 
         _set_subscription(email.lower(), sub_id, subs)
-        _flash = subs
-        _send_activation(email, sub_id, _flash)
+        _send_activation(email, sub_id, subs)
         return {"ok": True, "email": email, "subscription_id": sub_id, "subscription_status": subs}
-    except stripe.error.SignatureVerificationError as e:
-        raise HTTPException(400, f"Stripe signature error: {e}")
     except stripe.error.StripeError as e:
-        raise HTTPException(400, f"Stripe error: {e.user_message or str(e)}")
+        detail = getattr(e, "user_message", None) or str(e)
+        raise HTTPException(400, f"Stripe error: {detail}")
 
-@router.post("/stripe/webservice")  # Webhook (set this path in Render’s dashboard)
+
+@router.post("/stripe/webhook")  # Webhook (configúralo en Stripe con /api/stripe/webhook)
 async def webhook(request: Request):
     payload = await request.body()
+    sig = request.headers.get("Stripe-Signature")
     try:
-        event = stripe.Webhook.construct_event(payload, request.headers.get("Stripe-Signature"), WEBHOOK_SECRET)
+        event = stripe.Webhook.construct_event(payload, sig, WEBHOOK_SECRET)
     except Exception as e:
         raise HTTPException(400, f"Webhook error: {e}")
 
@@ -154,6 +168,7 @@ async def webhook(request: Request):
             if email:
                 _set_subscription(email.lower(), obj.get("id") or "", "canceled")
     except Exception:
+        # No romper el webhook si hay fallos suaves
         pass
 
     return {"received": True}
