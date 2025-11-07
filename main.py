@@ -16,7 +16,8 @@ app.add_middleware(
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "mediazion-backend"}
+    return {"ok": True, "service": "backend-api-mediazion-1", "version": "3.2.1"}
+
 
 # Payments (Stripe)
 app.include_router(payments_router)
