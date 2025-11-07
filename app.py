@@ -4,26 +4,43 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.staticfiles import StaticFiles
 
-# --- DB init (PostgreSQL)
+# ---- DB init (PostgreSQL)
 try:
-    from utils_pg import ensure_db  # utils_pg exposes ensure_db()
+    from utils_pg import ensure_db  # your utils_pg exposes ensure_db()
 except Exception:
     ensure_db = None
 
-# --- Routers (required)
-from admin_routes import admin_router
-from contact_routes import contact_router
-from mediadores_module import mediadores_routes as mediadores_router  # if your file is mediadores_routes.py with "mediadores_router"
-from auth_routes import auth_router
-
-# If your mediadores router is defined as "mediadores_router", re-alias here:
+# ---- Routers (required/primary)
+# We try common module names and fall back gracefully to avoid hard crashes during import.
+mediadores_router = None
 try:
-    from mediadores_routes import mediadores_router as _m_router
-    mediadores_router = _m_router
+    # Preferred: mediadores_routes.py exports mediadores_router
+    from mediadores_routes import mediadores_router as _mediadores_router
+    mediadores_router = _mediadores_router
 except Exception:
-    pass
+    try:
+        # Alternate legacy: mediadores_module.py exports mediadores_routes (APIRouter)
+        from mediadores_module import mediadores_routes as _mediadores_router_alt
+        mediadores_router = _mediadores_router_alt
+    except Exception:
+        mediadores_router = None  # keep going; we'll just not mount it
 
-# --- Optional routers
+try:
+    from admin_routes import admin_router
+except Exception:
+    admin_router = None
+
+try:
+    from contact_routes import contact_router
+except Exception:
+    contact_router = None
+
+try:
+    from auth_routes import auth_router
+except Exception:
+    auth_router = None
+
+# ---- Optional routers
 try:
     from news_routes import news_router
 except Exception:
@@ -60,14 +77,13 @@ def parse_origins() -> list[str]:
     return [o.strip() for o in raw.split(",") if o.strip()]
 
 
-app = FastAPI(title="MEDIAZION Backend", version="3.2.3")
+app = FastAPI(title="MEDIAZION Backend", version="3.2.4")
 
-# Init DB
+# Init DB softly (don't block on bootstrap errors)
 if callable(ensure_db):
     try:
         ensure_db()
     except Exception:
-        # No bloquear arranque por fallo suave de bootstrap
         pass
 
 # CORS
@@ -80,26 +96,33 @@ app.add_middleware(
     allow_credentials=True,
 )
 
-# Static
+# Static files
 os.makedirs("uploads", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
-# Health (dejamos /health en raíz para probes/monitors)
+# Health
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "backend-api-mediazion-1", "version": "3.2.3"}
+    return {"ok": True, "service": "backend-api-mediazion-1", "version": "3.2.4"}
 
-# ------ API prefix alineado con el frontend ------
+# ------ API prefix aligned with frontend ------
 API_PREFIX = "/api"
 
-# Routers (todos bajo /api/*)
-app.include_router(admin_router,      prefix=API_PREFIX, tags=["admin"])
-app.include_router(contact_router,    prefix=API_PREFIX, tags=["contact"])
-app.include_router(mediadores_router, prefix=API_PREFIX, tags=["mediadores"])
-app.include_router(auth_router,       prefix=API_PREFIX, tags=["auth"])
+# Mount routers only if they imported correctly
+if admin_router is not None:
+    app.include_router(admin_router, prefix=API_PREFIX, tags=["admin"])
+
+if contact_router is not None:
+    app.include_router(contact_router, prefix=API_PREFIX, tags=["contact"])
+
+if mediadores_router is not None:
+    app.include_router(mediadores_router, prefix=API_PREFIX, tags=["mediadores"])
+
+if auth_router is not None:
+    app.include_router(auth_router, prefix=API_PREFIX, tags=["auth"])
 
 if news_router is not None:
-    app.include_router(news_router,   prefix=API_PREFIX, tags=["news"])
+    app.include_router(news_router, prefix=API_PREFIX, tags=["news"])
 
 if upload_router is not None:
     app.include_router(upload_router, prefix=API_PREFIX, tags=["uploads"])
@@ -112,7 +135,7 @@ if admin_manage is not None:
     app.include_router(admin_manage, prefix=API_PREFIX)
 
 if db_router is not None:
-    app.include_router(db_router,     prefix=API_PREFIX, tags=["db"])
+    app.include_router(db_router, prefix=API_PREFIX, tags=["db"])
 
 if migrate_router is not None:
     app.include_router(migrate_router, prefix=API_PREFIX, tags=["admin-migrate"])
