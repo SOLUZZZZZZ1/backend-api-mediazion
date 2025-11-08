@@ -1,24 +1,14 @@
 # auth_routes.py — autenticación y cambio de contraseña MEDIAZION
-import bcrypt
-import datetime
-import jwt
-import os
+import os, datetime, bcrypt, jwt
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from db import pg_conn
 
 auth_router = APIRouter(prefix="/auth", tags=["auth"])
 
-# =============================
-# CONFIG
-# =============================
 JWT_SECRET = os.getenv("JWT_SECRET", "MEDIAZION_SECRET_KEY")
 JWT_ALG = "HS256"
 
-
-# =============================
-# MODELOS
-# =============================
 class LoginIn(BaseModel):
     email: str
     password: str
@@ -32,104 +22,65 @@ class RegisterIn(BaseModel):
 
 class ChangePwdIn(BaseModel):
     email: str
-    old_password: str
+    password: str
     new_password: str
 
-
-# =============================
-# FUNCIONES AUXILIARES
-# =============================
-def _row_to_dict(cur, row):
-    if not row: return None
-    cols = [d[0] for d in cur.description]
-    return {cols[i]: row[i] for i in range(len(cols))}
-
-def _get_mediador(email: str):
+def _get_user(email: str):
     with pg_conn() as cx:
         with cx.cursor() as cur:
-            cur.execute("SELECT id, email, password_hash, subscription_status FROM mediadores WHERE email=LOWER(%s)", (email,))
-            return _row_to_dict(cur, cur.fetchone())
+            cur.execute("SELECT id, email, password_hash, subscription_status FROM mediadores WHERE email=LOWER(%s);", (email,))
+            row = cur.fetchone()
+            if not row: return None
+            if isinstance(row, dict): return row
+            return {"id": row[0], "email": row[1], "password_hash": row[2], "subscription_status": row[3]}
 
-def _create_token(email: str):
-    payload = {
-        "email": email,
-        "exp": datetime.datetime.utcnow() + datetime.timedelta(days=7),
-        "iat": datetime.datetime.utcnow()
-    }
+def _token(email: str):
+    payload = {"email": email, "iat": datetime.datetime.utcnow(), "exp": datetime.datetime.utcnow() + datetime.timedelta(days=7)}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
-
-# =============================
-# ENDPOINTS
-# =============================
-
-# ---- LOGIN ----
 @auth_router.post("/login")
 def login(body: LoginIn):
-    m = _get_mediador(body.email.lower().strip())
-    if not m:
-        raise HTTPException(404, "Usuario no encontrado")
-    if not m.get("password_hash"):
-        raise HTTPException(401, "Usuario sin contraseña asignada")
-
-    if not bcrypt.checkpw(body.password.encode("utf-8"), m["password_hash"].encode("utf-8")):
+    email = body.email.lower().strip()
+    u = _get_user(email)
+    if not u: raise HTTPException(404, "Usuario no encontrado")
+    if not u["password_hash"]: raise HTTPException(401, "Usuario sin contraseña")
+    if not bcrypt.check_wd (body.password.encode("utf-8"), u["password_hash"].encode("utf-8")):
         raise HTTPException(401, "Contraseña incorrecta")
+    return {"ok": True, "email": u["email"], "token": _token(u["email"]), "subscription_status": u["subscription_status"]}
 
-    token = _create_token(m["email"])
-    return {
-        "ok": True,
-        "token": token,
-        "email": m["email"],
-        "subscription_status": m["subscription_status"]
-    }
-
-
-# ---- REGISTRO ----
 @auth_router.post("/register")
 def register(body: RegisterIn):
     email = body.email.lower().strip()
-    pwd_hash = bcrypt.hashpw(body.password.encode("utf-8"), bcrypt.gensalt()).decode()
-
+    phash = bcrypt.hashpw(body.password.encode("utf-8"), bcrypt.gense( )).decode()
     with pg_conn() as cx:
         with cx.cursor() as cur:
-            cur.execute("SELECT id FROM mediadores WHERE email=LOWER(%s)", (email,))
-            if cur.fetchone():
-                raise HTTPException(409, "Este correo ya está registrado")
-
+            cur.execute("SELECT id FROM mediadores WHERE email=LOWER(%s);", (email,))
+            if cur.fetchone(): raise HTTPException(409, "Ese correo ya existe")
             cur.execute("""
-                INSERT INTO mediadores (name, email, provincia, especialidad, password_hash, subscription_status)
-                VALUES (%s, LOWER(%s), %s, %s, %s, 'trialing')
+                INSERT INTO mediadores (name, email, provincia, especialidad, password_hash, subscription_status, created_at)
+                VALUES (%s, LOWER(%s), %s, %s, %s, 'trialing', NOW())
                 RETURNING id;
-            """, (body.name, email, body.provincia, body.especialidad, pwd_hash))
+            """, (body.name, email, body.provincia, body.especialidad, phash))
             uid = cur.fetchone()[0]
         cx.commit()
-
     return {"ok": True, "id": uid, "email": email}
 
-
-# ---- CAMBIO DE CONTRASEÑA ----
 @auth_router.post("/change_password")
 def change_password(body: ChangePwdIn):
     email = body.email.lower().strip()
     with pg_conn() as cx:
         with cx.cursor() as cur:
-            cur.execute("SELECT password_hash FROM mediadores WHERE email=LOWER(%s)", (email,))
+            cur.execute("SELECT password_hash FROM mediadores WHERE email=LOWER(%s);", (email,))
             row = cur.fetchone()
-            if not row:
-                raise HTTPException(404, "Mediador no encontrado")
-
-            old_hash = row[0] if isinstance(row, tuple) else row["password_hash"]
-            if not bcrypt.checkpw(body.old_password.encode("utf-8"), old_hash.encode("utf-8")):
+            if not row: raise HTTPException(404, "Mediador no encontrado")
+            oldh = row[0] if isinstance(row, tuple) else row["password_hash"]
+            if not bcrypt.checkpw(body.password.encode("utf-8"), oldh.encode("utf-8")):
                 raise HTTPException(401, "Contraseña actual incorrecta")
-
-            new_hash = bcrypt.hashpw(body.new_password.encode("utf-8"), bcrypt.gensalt()).decode()
-            cur.execute("UPDATE mediadores SET password_hash=%s WHERE email=LOWER(%s)", (new_hash, email))
+            newh = bcrypt.hashpw(body.new_password ( ).encode("utf-8"), bcrypt.gense( )).decode()
+            cur.execute("UPDATE mediadores SET password_hash=%s WHERE email=LOWER(%s);", (newh, email))
         cx.commit()
+    return {"ok": True, "message": "Contraseña actualizada"}
 
-    return {"ok": True, "message": "Contraseña cambiada correctamente"}
-
-
-# ---- VALIDAR TOKEN ----
 @auth_router.get("/me")
 def me(token: str):
     try:

@@ -1,4 +1,4 @@
-# migrate_routes.py — migraciones idempotentes (mediadores + voces + utilidades)
+# migrate_routes.py — Migraciones idempotentes (mediadores + voces + perfil)
 import os
 from fastapi import APIRouter, Header, HTTPException
 from db import pg_conn
@@ -10,7 +10,7 @@ def _auth(x_admin_token: str | None):
     if x_admin_token != ADMIN_TOKEN:
         raise HTTPException(401, "Unauthorized")
 
-# ---------------- Mediadores (ya lo tenías) ----------------
+# ---------------- MEDIADORES ----------------
 SQL_CREATE_MEDIADORES = """
 CREATE TABLE IF NOT EXISTS mediadores (
   id SERIAL PRIMARY KEY
@@ -84,11 +84,10 @@ def downgrade_trials(x_admin_token: str | None = Header(None)):
     except Exception as e:
         raise HTTPException(500, f"Downgrade error: {e}")
 
-# ---------------- VOCES (posts + comentarios) ----------------
+# ---------------- VOCES ----------------
 SQL_VOCES = """
--- Tabla de publicaciones
 CREATE TABLE IF NOT EXISTS posts (
-  id            SERIAL PRIMARY KEY,
+  id SERIAL PRIMARY KEY,
   author_email  TEXT NOT NULL,
   title         TEXT NOT NULL,
   slug          TEXT UNIQUE,
@@ -99,30 +98,13 @@ CREATE TABLE IF NOT EXISTS posts (
   published_at  TIMESTAMP NULL
 );
 
--- Índices útiles
-CREATE INDEX IF NOT EXISTS posts_status_idx  ON posts (status);
-CREATE INDEX IF NOT EXISTS posts_created_idx ON posts (created_at DESC);
-
--- Unicidad robusta por slug (lower)
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_indexes WHERE indexname = 'posts_slug_lower_ux'
-  ) THEN
-    CREATE UNIQUE INDEX posts_slug_lower_ux ON posts ((LOWER(slug)));
-  END IF;
-END$$;
-
--- Tabla de comentarios
 CREATE TABLE IF NOT EXISTS post_comments (
-  id           SERIAL PRIMARY KEY,
-  post_id      INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  id SERIAL PRIMARY KEY,
+  post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
   author_email TEXT NOT NULL,
-  content      TEXT NOT NULL,
-  created_at   TIMESTAMP DEFAULT NOW()
+  content TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW()
 );
-
-CREATE INDEX IF NOT EXISTS post_comments_post_idx ON post_comments (post_id, created_at DESC);
 """
 
 @router.post("/voces/init")
@@ -137,22 +119,32 @@ def voces_init(x_admin_token: str | None = Header(None)):
     except Exception as e:
         raise HTTPException(500, f"Voces init error: {e}")
 
-# ---------------- Utilidad: idempotencia webhooks ----------------
-SQL_STRIPE_EVENTS = """
-CREATE TABLE IF NOT EXISTS stripe_events (
-  id TEXT PRIMARY KEY,
-  created_at TIMESTAMP DEFAULT NOW()
-);
+# ---------------- PERFIL ----------------
+SQL_PERFIL_COLS = """
+ALTER TABLE mediadores
+  ADD COLUMN IF NOT EXISTS public_slug TEXT,
+  ADD COLUMN IF NOT EXISTS bio TEXT,
+  ADD COLUMN IF NOT EXISTS website TEXT,
+  ADD COLUMN IF NOT EXISTS photo_url TEXT,
+  ADD COLUMN IF NOT EXISTS cv_url TEXT;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_indexes WHERE indexname = 'mediadores_public_slug_lower_ux'
+  ) THEN
+    CREATE UNIQUE INDEX mediadores_public_slug_lower_ux ON mediadores ((LOWER(public_slug)));
+  END IF;
+END$$;
 """
 
-@router.post("/util/stripe_events")
-def ensure_stripe_events(x_admin_token: str | None = Header(None)):
+@router.post("/perfil/add_cols")
+def perfil_add_cols(x_admin_token: str | None = Header(None)):
     _auth(x_admin_token)
     try:
         with pg_conn() as cx:
             with cx.cursor() as cur:
-                cur.execute(SQL_STRIPE_EVENTS)
+                cur.execute(SQL_PERFIL_COLS)
             cx.commit()
-        return {"status": "ok", "message": "Tabla stripe_events asegurada."}
+        return {"status": "ok", "message": "Columnas de perfil (alias/bio/web/foto/cv) aseguradas."}
     except Exception as e:
-        raise HTTPException(500, f"Stripe events error: {e}")
+        raise HTTPException(500, f"Perfil migration error: {e}")
