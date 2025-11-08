@@ -4,13 +4,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.staticfiles import StaticFiles
 
-# DB bootstrap (opcional)
 try:
     from utils_pg import ensure_db
 except Exception:
     ensure_db = None
 
-app = FastAPI(title="MEDIAZION Backend", version="3.6.0")
+app = FastAPI(title="MEDIAZION Backend", version="3.6.1")
 
 if callable(ensure_db):
     try:
@@ -31,64 +30,76 @@ app.add_middleware(
     allow_credentials=True,
 )
 
-# Static uploads
+# archivos subidos
 os.makedirs("uploads", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "backend-api-mediazion-1", "version": "3.6.0"}
+    return {"ok": True, "service": "backend-api-mediazion-1", "version": "3.6.1"}
 
 API_PREFIX = "/api"
-
 def _safe_include(router, prefix: str, tags=None):
     if router is not None:
         app.include_router(router, prefix=prefix, tags=tags or [])
 
-# -------- routers principales --------
-# AUTH (arregla /api/auth/login)
+# ---- AUTH (arregla /api/auth/login)
 try:
     from auth_routes import auth_router
 except Exception:
     auth_router = None
 _safe_include(auth_router, prefix=API_PREFIX, tags=["auth"])
 
-# UPLOAD
+# ---- UPLOAD (/api/upload/file)
 try:
     from upload_routes import upload_router
 except Exception:
     upload_router = None
 _safe_include(upload_router, prefix=API_PREFIX, tags=["upload"])
 
-# PERFIL (alias/bio/web/foto/cv + listado público)
+# ---- PERFIL (/api/perfil, /api/perfil/public)
 try:
     from perfil_routes import perfil_router
 except Exception:
     perfil_router = None
 _safe_include(perfil_router, prefix=API_PREFIX, tags=["perfil"])
 
-# VOCES (posts + comentarios)
+# ---- VOCES (/api/voces)
 try:
     from voces_routes import voces_router
 except Exception:
     voces_router = None
 _safe_include(voces_router, prefix=API_PREFIX, tags=["voces"])
 
-# STRIPE
+# ---- ACTAS (/api/actas/render_docx)
+try:
+    from actas_routes import actas_router
+except Exception:
+    actas_router = None
+_safe_include(actas_router, prefix=API_PREFIX, tags=["actas"])
+
+# ---- IA (/api/ai/assist, /api/ai/assist_with)
+try:
+    from ai_routes import ai_router
+except Exception:
+    ai_router = None
+if ai_router is not None:
+    app.include_router(ai_router, prefix=f"{API_PREFIX}/ai", tags=["ai"])
+
+# ---- STRIPE / PAYMENTS
 try:
     from stripe_routes import router as stripe_router
 except Exception:
     stripe_router = None
 _safe_include(stripe_router, prefix=API_PREFIX, tags=["stripe"])
 
-# PAYMENTS
 try:
     from payments_routes import router as payments_router
 except Exception:
     payments_router = None
 _safe_include(payments_router, prefix=API_PREFIX, tags=["payments"])
 
-# UTILIDADES PRO
+# ---- utilidades PRO opcionales
 try:
     from plantillas_routes import plantillas_router
 except Exception:
@@ -107,22 +118,14 @@ except Exception:
     agenda_router = None
 _safe_include(agenda_router, prefix=API_PREFIX, tags=["agenda"])
 
-# IA
-try:
-    from ai_routes import ai_router
-except Exception:
-    ai_router = None
-if ai_router is not None:
-    app.include_router(ai_router, prefix=f"{API_PREFIX}/ai", tags=["ai"])
-
-# MIGRACIONES (admin)
+# ---- MIGRACIONES admin
 try:
     from migrate_routes import router as migrate_router
 except Exception:
     migrate_router = None
 _safe_include(migrate_router, prefix=API_PREFIX, tags=["admin-migrate"])
 
-# (Opcional) mediadores legacy
+# (opcional) mediadores legacy (antiguos formularios sin /api)
 try:
     from mediadores_routes import mediadores_router as _mr
 except Exception:
