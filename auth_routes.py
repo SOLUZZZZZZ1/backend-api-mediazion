@@ -1,4 +1,4 @@
-# auth_routes.py — mínimo viable
+# auth_routes.py — mínimo viable y estable
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from db import pg_conn
@@ -36,7 +36,7 @@ def login(body: LoginIn):
         row = cur.fetchone()
         if not row or not row[0] or not bcrypt.checkpw(body.password.encode(), row[0].encode()):
             raise HTTPException(401, "Usuario o contraseña incorrectos")
-    return {"ok": True, "token": "ok"}  # el front solo comprueba ok:true
+    return {"ok": True, "token": "ok"}  # el Panel solo comprueba ok:true
 
 @auth_router.post("/change_password")
 def change_password(body: ChangePwdIn):
