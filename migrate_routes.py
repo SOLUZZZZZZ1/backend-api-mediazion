@@ -1,7 +1,8 @@
-# migrate_routes.py — Migraciones idempotentes (mediadores + voces + perfil)
+# migrate_routes.py — Migraciones idempotentes (mediadores + voces + perfil) + utilidades admin
 import os
 from fastapi import APIRouter, Header, HTTPException
 from db import pg_conn
+import bcrypt  # añadido para setear contraseñas temporales
 
 router = APIRouter(prefix="/admin/migrate", tags=["admin-migrate"])
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or "8354Law18354Law1@"
@@ -148,3 +149,46 @@ def perfil_add_cols(x_admin_token: str | None = Header(None)):
         return {"status": "ok", "message": "Columnas de perfil (alias/bio/web/foto/cv) aseguradas."}
     except Exception as e:
         raise HTTPException(500, f"Perfil migration error: {e}")
+
+# ---------------- LIMPIEZA / UTILIDADES ADMIN ----------------
+
+@router.post("/mediadores/clear_all")
+def clear_all_mediadores(x_admin_token: str | None = Header(None)):
+    """
+    Borra TODOS los mediadores. Útil para limpiar correos de prueba.
+    """
+    _auth(x_admin_token)
+    try:
+        with pg_conn() as cx:
+            with cx.cursor() as cur:
+                cur.execute("DELETE FROM mediadores;")
+            cx.commit()
+        return {"status": "ok", "message": "Todos los mediadores han sido eliminados."}
+    except Exception as e:
+        raise HTTPException(500, f"Clear error: {e}")
+
+@router.post("/mediadores/set_temp_password")
+def set_temp_password(email: str, temp_password: str, x_admin_token: str | None = Header(None)):
+    """
+    Fija una contraseña temporal para un mediador existente (por email).
+    """
+    _auth(x_admin_token)
+    if not email or not temp_password:
+        raise HTTPException(400, "email y temp_password son obligatorios")
+    try:
+        hashed = bcrypt.hashpw(temp_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+        with pg_conn() as cx:
+            with cx.cursor() as cur:
+                cur.execute(
+                    "UPDATE mediadores SET password_hash=%s WHERE LOWER(email)=LOWER(%s);",
+                    (hashed, email),
+                )
+                updated = cur.rowcount
+            cx.commit()
+        if updated == 0:
+            raise HTTPException(404, "User not found")
+        return {"status": "ok", "email": email, "message": "Contraseña temporal aplicada."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Set password error: {e}")
