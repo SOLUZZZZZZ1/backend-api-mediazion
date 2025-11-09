@@ -12,9 +12,9 @@ from contact_routes import _send_mail, MAIL_TO_DEFAULT
 mediadores_router = APIRouter(prefix="/mediadores", tags=["mediadores"])
 
 TRIAL_DAYS = 7
-PANEL_URL = PANEL_URL = "https://mediazion.eu/#/panel-mediador"
+PANEL_URL = "https://mediazion.vercel.app/#/panel-mediador"
+CTA_SUBSCRIBE_URL = "https://mediazion.vercel.app/#/suscripcion/ok?start=1"
 
-CTA_SUBSCRIBE_URL = "https://mediazion.eu/suscripcion/ok?start=1"
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or "8354Law18354Law1@"
 
 class MediadorIn(BaseModel):
