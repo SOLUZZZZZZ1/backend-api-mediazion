@@ -1,17 +1,33 @@
-# upload_routes.py — subida local
+# upload_routes.py — versión estable MEDIAZION (corrige subida de Word/PDF)
 import os
 from fastapi import APIRouter, File, UploadFile, HTTPException
+from fastapi.responses import JSONResponse
 
-upload_router = APIRouter()
+upload_router = APIRouter(prefix="/upload", tags=["upload"])
+
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-@upload_router.post("/upload/file")
+@upload_router.post("/file")
 async def upload_file(file: UploadFile = File(...)):
+    """
+    Guarda un archivo subido (PDF/DOC/DOCX/TXT/MD) y devuelve su URL accesible desde /uploads.
+    """
     try:
-        path = os.path.join(UPLOAD_DIR, file.filename)
+        filename = file.filename.replace(" ", "_")
+        path = os.path.join(UPLOAD_DIR, filename)
+
+        # Leer contenido y guardar en disco
+        content = await file.read()
         with open(path, "wb") as f:
-            f.write(await file.read())
-        return {"ok": True, "url": f"/uploads/{file.filename}"}
+            f.write(content)
+
+        # Respuesta estándar
+        return JSONResponse({
+            "ok": True,
+            "filename": filename,
+            "url": f"/uploads/{filename}"
+        })
+
     except Exception as e:
-        raise HTTPException(500, f"Error al subir archivo: {e}")
+        raise HTTPException(status_code=500, detail=f"Error al guardar archivo: {e}")
