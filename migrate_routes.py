@@ -1,12 +1,14 @@
 # migrate_routes.py — Migraciones idempotentes (mediadores + voces + perfil) + utilidades admin
 import os
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Header, HTTPException
 from db import pg_conn
-import bcrypt  # añadido para setear contraseñas temporales
+import bcrypt  # para setear contraseñas temporales
 
 router = APIRouter(prefix="/admin/migrate", tags=["admin-migrate"])
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or "8354Law18354Law1@"
 
+# --- Autenticación simple admin ---
 def _auth(x_admin_token: str | None):
     if x_admin_token != ADMIN_TOKEN:
         raise HTTPException(401, "Unauthorized")
@@ -36,7 +38,6 @@ ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS password_hash TEXT;
 ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS subscription_id TEXT;
 ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
 ALTER TABLE mediadores ADD COLUMN IF NOT EXISTS password_must_change BOOLEAN DEFAULT FALSE;
-
 """
 
 SQL_UNIQ_EMAIL = """
@@ -156,9 +157,7 @@ def perfil_add_cols(x_admin_token: str | None = Header(None)):
 
 @router.post("/mediadores/clear_all")
 def clear_all_mediadores(x_admin_token: str | None = Header(None)):
-    """
-    Borra TODOS los mediadores. Útil para limpiar correos de prueba.
-    """
+    """Borra TODOS los mediadores (solo pruebas)."""
     _auth(x_admin_token)
     try:
         with pg_conn() as cx:
@@ -171,9 +170,7 @@ def clear_all_mediadores(x_admin_token: str | None = Header(None)):
 
 @router.post("/mediadores/set_temp_password")
 def set_temp_password(email: str, temp_password: str, x_admin_token: str | None = Header(None)):
-    """
-    Fija una contraseña temporal para un mediador existente (por email).
-    """
+    """Fija una contraseña temporal para un mediador existente (por email)."""
     _auth(x_admin_token)
     if not email or not temp_password:
         raise HTTPException(400, "email y temp_password son obligatorios")
@@ -194,3 +191,35 @@ def set_temp_password(email: str, temp_password: str, x_admin_token: str | None 
         raise
     except Exception as e:
         raise HTTPException(500, f"Set password error: {e}")
+
+# ---------------- ACTIVAR TRIAL PRO 7 DÍAS ----------------
+
+@router.post("/mediadores/set_trial")
+def set_trial(email: str, days: int = 7, x_admin_token: str | None = Header(None)):
+    """Activa periodo de prueba (trial PRO) para un mediador existente."""
+    _auth(x_admin_token)
+    if not email:
+        raise HTTPException(400, "email requerido")
+    now = datetime.now(timezone.utc)
+    end = now + timedelta(days=days)
+    try:
+        with pg_conn() as cx:
+            with cx.cursor() as cur:
+                cur.execute("""
+                    UPDATE mediadores
+                       SET subscription_status='trialing',
+                           status='active',
+                           trial_used=FALSE,
+                           trial_start=%s,
+                           trial_end=%s
+                     WHERE LOWER(email)=LOWER(%s);
+                """, (now, end, email))
+                n = cur.rowcount
+            cx.commit()
+        if n == 0:
+            raise HTTPException(404, "Mediador no encontrado")
+        return {"ok": True, "email": email, "trial_until": end.isoformat()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Error activando trial: {e}")
