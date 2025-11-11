@@ -125,6 +125,20 @@ except Exception:
     migrate_router = None
 _safe_include(migrate_router, prefix=API_PREFIX, tags=["admin-migrate"])
 
+# ---- NEWS (/api/news)
+try:
+    from news_routes import news_router
+except Exception:
+    news_router = None
+_safe_include(news_router, prefix=API_PREFIX, tags=["news"])
+
+# ---- CONTACTO (/api/contact)
+try:
+    from contact_routes import contact_router
+except Exception:
+    contact_router = None
+_safe_include(contact_router, prefix=API_PREFIX, tags=["contact"])
+
 # (opcional) mediadores legacy (antiguos formularios sin /api)
 try:
     from mediadores_routes import mediadores_router as _mr
