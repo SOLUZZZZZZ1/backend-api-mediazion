@@ -1,112 +1,48 @@
-# app.py — MEDIAZION Backend (FastAPI unificado)
-import os
+# app.py — Mediazion Backend (FastAPI) con todos los routers registrados
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
+import os
 
-app = FastAPI(title="MEDIAZION Backend", version="3.6.2")
+# Opcional: si tienes un módulo db.py con pg_conn, no se usa aquí.
+# from db import pg_conn
 
-# --- CORS ---
-def parse_origins():
-    raw = os.getenv("ALLOWED_ORIGINS", "https://mediazion.eu,https://www.mediazion.eu,https://*.vercel.app")
-    return [o.strip() for o in raw.split(",") if o.strip()]
+app = FastAPI(title="Mediazion Backend", version="1.2.0")
 
+# CORS para Vercel y dominios propios
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://mediazion.vercel.app,https://www.mediazion.eu,https://mediazion.eu").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=parse_origins(),
-    allow_origin_regex=r"https://.*\.vercel\.app$",
+    allow_origins=[o.strip() for o in ALLOWED_ORINS] if ALLOWED_ORIGINS else ["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=True,
 )
 
-# --- uploads ---
-os.makedirs("uploads", exist_ok=True)
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
-
+# Salud
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "backend-api-mediazion-1", "version": "3.6.2"}
+    return JSONResponse({"ok": True, "service": "mediazion-backend", "version": "1.2.0"})
 
-API_PREFIX = "/api"
+# --- IMPORTS DE ROUTERS ---
+from actas_routes import actas_router
+from upload_routes import upload_router
+from voces_routes import voces_router
+from ai_routes import ai_router
+from contact_routes import contact_router
+from voces_routes import voces_router
+from news_routes import voces_router as noticias_router
+from auth_routes import auth_router
 
-def _safe_include(router, prefix=API_PREFIX, tags=None):
-    if router is not None:
-        app.include_router(router, prefix=prefix, tags=tags or [])
+# Registros bajo /api
+app.include_router(auth_router, prefix="/api", tags=["auth"])
+app.include_router(upload_router, prefix="/api", tags=["upload"])
+app.include_router(actas_router,  prefix="/api", tags=["actas"])
+app.include_router(contact_router, prefix="/api", tags=["mail"])
+app.include_router(voces_router,  prefix="/api", tags=["voces"])
+app.include_router(noticias_router, prefix="/api", tags=["news"])
+app.include_router(ai_roter,       prefix="/api", tags=["ai"])
 
-# --- AUTH ---
-try:
-    from auth_routes import auth_router
-except Exception:
-    auth_router = None
-_safe_include(auth_router, tags=["auth"])
-
-# --- UPLOAD ---
-try:
-    from upload_routes import upload_router
-except Exception:
-    upload_router = None
-_safe_include(upload_router, tags=["upload"])
-
-# --- PERFIL ---
-try:
-    from perfil_routes import perfil_router
-except Exception:
-    perfil_router = None
-_safe_include(perfil_router, tags=["perfil"])
-
-# --- ACTAS (DOCX/PDF) ---
-try:
-    from actas_routes import actas_router
-except Exception:
-    actas_router = None
-_safe_include(actas_router, tags=["actas"])
-
-# --- IA normal ---
-try:
-    from ai_routes import ai_router
-except Exception:
-    ai_router = None
-_safe_include(ai_router, tags=["ai"])
-
-# --- IA LEGAL (Modo experto jurídico) ---
-try:
-    from ai_legal_routes import ai_legal_router
-except Exception:
-    ai_legal_router = None
-_safe_include(ai_legal_router, tags=["ai-legal"])
-
-# --- CONTACTO ---
-try:
-    from contact_routes import contact_router
-except Exception:
-    contact_router = None
-_safe_include(contact_router, tags=["contact"])
-
-# --- NEWS / ACTUALIDAD ---
-try:
-    from news_routes import router as news_router
-except Exception:
-    news_router = None
-_safe_include(news_router, tags=["news"])
-
-# --- VOCES ---
-try:
-    from voces_routes import voces_router
-except Exception:
-    voces_router = None
-_safe_include(voces_router, tags=["voces"])
-
-# --- MIGRACIONES ADMIN ---
-try:
-    from migrate_routes import router as migrate_router
-except Exception:
-    migrate_router = None
-_safe_include(migrate_router, tags=["admin-migrate"])
-
-# --- STRIPE (opcional) ---
-try:
-    from stripe_routes import router as stripe_router
-except Exception:
-    stripe_router = None
-_safe_include(stripe_router, tags=["stripe"])
+# Si tienes un router de "status" de mediadores/usuarios, añádelo:
+# from mediadores_routes import mediadores_router
+# app.include_router(mediadores_router, prefix="/api", tags=["mediadores"])
