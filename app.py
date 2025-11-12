@@ -13,7 +13,7 @@ app = FastAPI(title="Mediazion Backend", version="1.2.0")
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://mediazion.vercel.app,https://www.mediazion.eu,https://mediazion.eu").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in ALLOWED_ORINS] if ALLOWED_ORIGINS else ["*"],
+    allow_origins=[o.strip() for o in ALLOWED_ORIGINS] if ALLOWED_ORIGINS else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
