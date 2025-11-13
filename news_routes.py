@@ -1,29 +1,21 @@
-# news_routes.py — Actualidad (BOE / Confilegal / LegalToday)
-from fastapi import APIRouter, HTTPException
-import feedparser
+# news_routes.py — Actualidad básica para Mediazion (puedes mejorar fuentes más tarde)
+from fastapi import APIRouter
 
-router = APIRouter(prefix="/news", tags=["news"])
+news_router = APIRouter()
 
-SOURCES = {
-    "BOE": "https://www.boe.es/rss/boe_es.xml",
-    "CONFILEGAL": "https://confilegal.com/feed/",
-    "LEGALTODAY": "https://www.legaltoday.com/feed/"
-}
-
-@router.get("/")
+@news_router.get("/news")
 def list_news():
-    try:
-        items = []
-        for name, url in SOURCES.items():
-            feed = feedparser.parse(url)
-            for e in feed.entries[:8]:
-                items.append({
-                    "title": e.get("title"),
-                    "summary": e.get("summary", ""),
-                    "url": e.get("link"),
-                    "date": e.get("published", ""),
-                    "source": name
-                })
-        return {"ok": True, "items": items}
-    except Exception as e:
-        raise HTTPException(500, f"Error obteniendo noticias: {e}")
+    """
+    De momento devolvemos un listado estático. Más adelante puedes integrar BOE, Confilegal, etc.
+    Lo importante ahora es que /api/news deje de dar 404.
+    """
+    items = [
+        {
+            "title": "Ejemplo de noticia",
+            "summary": "Aquí aparecerá una noticia real cuando conectemos BOE/Confilegal.",
+            "url": "https://www.boe.es/",
+            "date": "2025-11-13",
+            "source": "INTERNAS",
+        }
+    ]
+    return {"ok": True, "items": items}
