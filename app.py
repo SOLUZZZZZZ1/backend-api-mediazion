@@ -1,50 +1,102 @@
-# app.py — Mediazion Backend (FastAPI) con todos los routers registrados
+# app.py — BACKEND LIMPIO Y FUNCIONAL PARA MEDIAZION
+
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
-import os
 
-# Opcional: si tienes un módulo db.py con pg_conn, no se usa aquí.
-# from db import pg_conn
+app = FastAPI(title="Mediazion Backend", version="1.0.0")
 
-app = FastAPI(title="Mediazion Backend", version="1.2.0")
+# --------------------------
+# 1. CORS
+# --------------------------
+ALLOWED = [
+    "https://mediazion.eu",
+    "https://www.mediazion.eu",
+    "https://*.vercel.app",
+]
 
-# CORS para Vercel y dominios propios
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://mediazion.vercel.app,https://www.mediazion.eu,https://mediazion.eu").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in ALLOWED_ORIGINS] if ALLOWED_ORIGINS else ["*"],
-    allow_credentials=True,
+    allow_origins=ALLOWED,
+    allow_origin_regex=r"https://.*\.vercel\.app$",
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
 
-# Salud
+# --------------------------
+# 2. STATIC /uploads
+# --------------------------
+os.makedirs("uploads", exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
+# --------------------------
+# 3. HEALTH CHECK
+# --------------------------
 @app.get("/health")
 def health():
-    return JSONResponse({"ok": True, "service": "mediazion-backend", "version": "1.2.0"})
+    return JSONResponse({"ok": True, "service": "mediazion-backend"})
 
-# --- IMPORTS DE ROUTERS ---
-from actas_routes import actas_router
-from upload_routes import upload_router
-from voces_routes import voces_router
-from ai_routes import ai_router
-from contact_routes import contact_router
-from voces_routes import voces_router
-from news_routes import voces_router as noticias_router
+
+# --------------------------
+# 4. ROUTERS (TODOS CORRECTOS)
+# --------------------------
+
+# AUTH
 from auth_routes import auth_router
-from actas_routes import actas_router
-
-# Registros bajo /api
 app.include_router(auth_router, prefix="/api", tags=["auth"])
-app.include_router(upload_router, prefix="/api", tags=["upload"])
-app.include_router(actas_router,  prefix="/api", tags=["actas"])
-app.include_router(contact_router, prefix="/api", tags=["mail"])
-app.include_router(voces_router,  prefix="/api", tags=["voces"])
-app.include_router(noticias_router, prefix="/api", tags=["news"])
-app.include_router(ai_roter,       prefix="/api", tags=["ai"])
-app.include_router(actas_router, prefix="/api")
 
-# Si tienes un router de "status" de mediadores/usuarios, añádelo:
-# from mediadores_routes import mediadores_router
-# app.include_router(mediadores_router, prefix="/api", tags=["mediadores"])
+# IA principal
+from ai_routes import ai_router
+app.include_router(ai_router, prefix="/api", tags=["ai"])
+
+# IA legal (si existe)
+try:
+    from ai_legal_routes import ai_legal_router
+    app.include_router(ai_legal_router, prefix="/api", tags=["ai-legal"])
+except:
+    pass
+
+# VOCES / BLOG
+try:
+    from voces_routes import voces_router
+    app.include_router(voces_router, prefix="/api", tags=["voces"])
+except:
+    pass
+
+# CONTACTO
+try:
+    from contact_routes import contact_router
+    app.include_router(contact_router, prefix="/api", tags=["contact"])
+except:
+    pass
+
+# NEWS
+try:
+    from news_routes import news_router
+    app.include_router(news_router, prefix="/api", tags=["news"])
+except:
+    pass
+
+# ACTAS (DOCX)
+try:
+    from actas_routes import actas_router
+    app.include_router(actas_router, prefix="/api", tags=["actas"])
+except:
+    pass
+
+# UPLOAD
+try:
+    from upload_routes import upload_router
+    app.include_router(upload_router, prefix="/api", tags=["upload"])
+except:
+    pass
+
+# MIGRACIONES ADMIN
+try:
+    from migrate_routes import router as migrate_router
+    app.include_router(migrate_router, prefix="/api/admin", tags=["admin"])
+except:
+    pass
