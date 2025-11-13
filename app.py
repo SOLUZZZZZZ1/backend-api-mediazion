@@ -1,16 +1,13 @@
-# app.py — BACKEND LIMPIO Y FUNCIONAL PARA MEDIAZION
-
+# app.py — Mediazion Backend (estable y completo)
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
+from starlette.staticfiles import StaticFiles
 
-app = FastAPI(title="Mediazion Backend", version="1.0.0")
+app = FastAPI(title="Mediazion Backend", version="1.3.1")
 
-# --------------------------
-# 1. CORS
-# --------------------------
+# ---------------- CORS ----------------
 ALLOWED = [
     "https://mediazion.eu",
     "https://www.mediazion.eu",
@@ -26,77 +23,55 @@ app.add_middleware(
     allow_credentials=True,
 )
 
-# --------------------------
-# 2. STATIC /uploads
-# --------------------------
+# -------------- STATIC /uploads --------------
 os.makedirs("uploads", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
-# --------------------------
-# 3. HEALTH CHECK
-# --------------------------
+# -------------- HEALTH --------------
 @app.get("/health")
 def health():
     return JSONResponse({"ok": True, "service": "mediazion-backend"})
 
 
-# --------------------------
-# 4. ROUTERS (TODOS CORRECTOS)
-# --------------------------
-
-# AUTH
+# -------------- IMPORT ROUTERS --------------
 from auth_routes import auth_router
-app.include_router(auth_router, prefix="/api", tags=["auth"])
-
-# IA principal
 from ai_routes import ai_router
-app.include_router(ai_router, prefix="/api", tags=["ai"])
+from upload_routes import upload_router
+from actas_routes import actas_router
+from contact_routes import contact_router
+from voces_routes import voces_router
+from news_routes import news_router
 
-# IA legal (si existe)
 try:
     from ai_legal_routes import ai_legal_router
-    app.include_router(ai_legal_router, prefix="/api", tags=["ai-legal"])
 except:
-    pass
+    ai_legal_router = None
 
-# VOCES / BLOG
 try:
-    from voces_routes import voces_router
-    app.include_router(voces_router, prefix="/api", tags=["voces"])
+    from mediadores_routes import mediadores_router
 except:
-    pass
+    mediadores_router = None
 
-# CONTACTO
-try:
-    from contact_routes import contact_router
-    app.include_router(contact_router, prefix="/api", tags=["contact"])
-except:
-    pass
-
-# NEWS
-try:
-    from news_routes import news_router
-    app.include_router(news_router, prefix="/api", tags=["news"])
-except:
-    pass
-
-# ACTAS (DOCX)
-try:
-    from actas_routes import actas_router
-    app.include_router(actas_router, prefix="/api", tags=["actas"])
-except:
-    pass
-
-# UPLOAD
-try:
-    from upload_routes import upload_router
-    app.include_router(upload_router, prefix="/api", tags=["upload"])
-except:
-    pass
-
-# MIGRACIONES ADMIN
 try:
     from migrate_routes import router as migrate_router
-    app.include_router(migrate_router, prefix="/api/admin", tags=["admin"])
 except:
-    pass
+    migrate_router = None
+
+
+# -------------- REGISTER ROUTERS --------------
+app.include_router(auth_router, prefix="/api", tags=["auth"])
+app.include_router(ai_router, prefix="/api", tags=["ai"])
+app.include_router(upload_router, prefix="/api", tags=["upload"])
+app.include_router(actas_router, prefix="/api", tags=["actas"])
+app.include_router(contact_router, prefix="/api", tags=["contact"])
+app.include_router(voces_router, prefix="/api", tags=["voces"])
+app.include_router(news_router, prefix="/api", tags=["news"])
+
+if ai_legal_router:
+    app.include_router(ai_legal_router, prefix="/api", tags=["ai-legal"])
+
+if mediadores_router:
+    app.include_router(mediadores_router, prefix="/api", tags=["mediadores"])
+
+if migrate_router:
+    app.include_router(migrate_router, prefix="/api/admin", tags=["admin"])
