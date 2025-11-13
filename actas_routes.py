@@ -1,159 +1,92 @@
-# actas_routes.py — generación de ACTAS (DOCX + PDF) para Mediazion
-import os
+# actas_routes.py — Generación de actas DOCX para Mediazion (sin depender de reportlab)
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from datetime import datetime
+from typing import Optional
+import os
+import datetime
 from io import BytesIO
+
+try:
+    from docx import Document
+    from docx.shared import Inches
+except Exception as e:
+    raise RuntimeError(f"Falta dependencia python-docx en el entorno: {e}")
+
 import requests
-
-# DOCX
-from docx import Document
-from docx.shared import Inches
-
-# PDF
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
 
 actas_router = APIRouter()
 
-UPLOAD_DIR = "uploads/actas"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+# Carpeta donde guardamos las actas generadas
+ACTAS_DIR = os.path.join("uploads", "actas")
+os.makedirs(ACTAS_DIR, exist_ok=True)
 
 class ActaIn(BaseModel):
     case_no: str
     date_iso: str
-    mediator_alias: str = ""
-    parties: str = ""
+    mediator_alias: str
+    parties: str
     summary: str
-    agreements: str = ""
-    confidentiality: bool = True
-    logo_url: str = None
+    agreements: Optional[str] = None
+    confidentiality: Optional[bool] = True
+    logo_url: Optional[str] = "https://mediazion.eu/logo.png"
 
-
-# ---------------------------------------------------------------------
-# ---------------              DOCX             ------------------------
-# ---------------------------------------------------------------------
-@actas_router.post("/actas/render_docx")
-def render_docx(data: ActaIn):
-
+@actas_router.post("/render_docx")
+def render_docx(body: ActaIn):
+    """
+    Genera un archivo DOCX con el contenido del acta y devuelve la URL para descargarlo.
+    """
     try:
-        doc = Document()
+      # Crear documento
+      doc = Document()
 
-        # Logo
-        if data.logo_url:
-            try:
-                img_bytes = requests.get(data.logo_url, timeout=5).content
-                doc.add_picture(BytesIO(img_bytes), width=Inches(1.5))
-            except:
-                pass  # no romper si no hay logo
+      # Insertar logo (si se proporciona URL válida)
+      if body.logo_url:
+          try:
+              resp = requests.get(body.logo_url, timeout=5)
+              resp.raise_for_status()
+              image_stream = BytesIO(resp.content)
+              doc.add_picture(image_stream, width=Inches(1.5))
+          except Exception:
+              # Si falla la descarga del logo, seguimos sin romper el acta
+              pass
 
-        doc.add_heading("ACTA DE MEDIACIÓN", level=1)
-        doc.add_paragraph(f"Expediente: {data.case_no}")
-        doc.add_paragraph(f"Fecha: {data.date_iso}")
+      # Encabezado
+      doc.add_heading("ACTA DE MEDIACIÓN", level=1)
+      doc.add_paragraph(f"Expediente: {body.case_no}")
+      doc.add_paragraph(f"Fecha: {body.date_iso}")
+      doc.add_paragraph(f"Mediador/a: {body.mediator_alias}")
+      doc.add_paragraph(f"Partes: {body.parties}")
 
-        if data.mediator_alias:
-            doc.add_paragraph(f"Mediador/a: {data.mediator_alias}")
+      # Contenido
+      doc.add_heading("Resumen / Desarrollo", level=2)
+      doc.add_paragraph(body.summary)
 
-        if data.parties:
-            doc.add_paragraph(f"Partes: {data.parties}")
+      doc.add_heading("Acuerdos alcanzados", level=2)
+      doc.add_paragraph(body.agreements or "Sin acuerdos adicionales registrados.")
 
-        doc.add_heading("Resumen / Contenido", level=2)
-        doc.add_paragraph(data.summary)
+      if body.confidentiality:
+          doc.add_paragraph(
+              "Cláusula de confidencialidad: Las partes se comprometen a mantener la confidencialidad "
+              "de la información intercambiada durante el proceso de mediación."
+          )
 
-        if data.agreements:
-            doc.add_heading("Acuerdos", level=2)
-            doc.add_paragraph(data.agreements)
+      # Guardar el archivo en disco
+      ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+      safe_case = body.case_no.replace(" ", "_")
+      filename = f"Acta_{safe_case}_{ts}.docx"
+      path = os.path.join(ACTAS_DIR, filename)
+      doc.save(path)
 
-        if data.confidentiality:
-            doc.add_paragraph("")
-            doc.add_paragraph(
-                "Cláusula de confidencialidad:\n"
-                "Las partes se comprometen a mantener la confidencialidad del proceso."
-            )
-
-        # Guardar DOCX
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        fname = f"acta_{data.case_no.replace(' ','_')}_{timestamp}.docx"
-        fpath = os.path.join(UPLOAD_DIR, fname)
-        doc.save(fpath)
-
-        return {"ok": True, "url": f"/uploads/actas/{fname}"}
+      # Devolver URL relativa para que el frontend pueda descargarlo
+      return {"ok": True, "url": f"/uploads/actas/{filename}"}
 
     except Exception as e:
-        raise HTTPException(500, f"Error generando DOCX: {str(e)}")
+      raise HTTPException(500, f"Error generando el acta: {str(e)}")
 
-
-# ---------------------------------------------------------------------
-# ----------------             PDF              ------------------------
-# ---------------------------------------------------------------------
-@actas_router.post("/actas/render_pdf")
-def render_pdf(data: ActaIn):
-
-    try:
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        fname = f"acta_{data.case_no.replace(' ','_')}_{timestamp}.pdf"
-        fpath = os.path.join(UPLOAD_DIR, fname)
-
-        c = canvas.Canvas(fpath, pagesize=A4)
-        width, height = A4
-        y = height - 70
-
-        # Logo
-        if data.logo_url:
-            try:
-                img_bytes = BytesIO(requests.get(data.logo_url, timeout=5).content)
-                c.drawImage(img_bytes, 40, y - 40, width=100, preserveAspectRatio=True, mask='auto')
-                y -= 60
-            except:
-                pass
-
-        # Cabecera
-        c.setFont("Helvetica-Bold", 16)
-        c.drawString(150, y, "ACTA DE MEDIACIÓN")
-        y -= 40
-
-        c.setFont("Helvetica", 11)
-        lines = [
-            f"Expediente: {data.case_no}",
-            f"Fecha: {data.date_iso}",
-        ]
-
-        if data.mediator_alias:
-            lines.append(f"Mediador/a: {data.mediator_alias}")
-        if data.parties:
-            lines.append(f"Partes: {data.parties}")
-
-        lines.append("")
-        lines.append("Resumen / Contenido:")
-        for l in data.summary.split("\n"):
-            lines.append(l)
-
-        if data.agreements:
-            lines.append("")
-            lines.append("Acuerdos:")
-            for l in data.agreements.split("\n"):
-                lines.append(l)
-
-        if data.confidentiality:
-            lines.append("")
-            lines.append(
-                "Cláusula de confidencialidad:\n"
-                "Las partes se comprometen a mantener la confidencialidad del proceso."
-            )
-
-        # Escribir líneas
-        for line in lines:
-            for segment in line.split("\n"):
-                c.drawString(40, y, segment)
-                y -= 18
-                if y < 60:
-                    c.showPage()
-                    c.setFont("Helvetica", 11)
-                    y = height - 70
-
-        c.save()
-
-        return {"ok": True, "url": f"/uploads/actas/{fname}"}
-
-    except Exception as e:
-        raise HTTPException(500, f"Error generando PDF: {str(e)}")
+@actas_router.post("/render_pdf")
+def render_pdf_stub():
+    """
+    Stub para PDF. De momento no generamos PDF porque no está instalada la librería reportlab.
+    Cuando quieras, añadimos soporte real y la dependencia en requirements.txt.
+    """
+    raise HTTPException(501, "Generación de PDF no disponible en este entorno. Usa el DOCX.")
