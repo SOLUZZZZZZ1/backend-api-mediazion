@@ -33,6 +33,7 @@ from contact_routes import contact_router
 from voces_routes import voces_router
 from news_routes import voces_router as noticias_router
 from auth_routes import auth_router
+from actas_routes import actas_router
 
 # Registros bajo /api
 app.include_router(auth_router, prefix="/api", tags=["auth"])
@@ -42,6 +43,7 @@ app.include_router(contact_router, prefix="/api", tags=["mail"])
 app.include_router(voces_router,  prefix="/api", tags=["voces"])
 app.include_router(noticias_router, prefix="/api", tags=["news"])
 app.include_router(ai_roter,       prefix="/api", tags=["ai"])
+app.include_router(actas_router, prefix="/api")
 
 # Si tienes un router de "status" de mediadores/usuarios, añádelo:
 # from mediadores_routes import mediadores_router
