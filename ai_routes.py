@@ -1,11 +1,15 @@
-# ai_routes.py — IA institucional + asistente profesional + asistente con documento
+# ai_routes.py — IA institucional + asistente profesional + documentos + IMÁGENES (Vision)
+
 import os
-from typing import Optional, Dict, Any
-from fastapi import APIRouter, HTTPException, Depends, Header, Request
-from pydantic import BaseModel
-import httpx
 import io
 import re
+import base64
+from typing import Optional, Dict, Any
+
+from fastapi import APIRouter, HTTPException, Depends, Header
+from pydantic import BaseModel
+import httpx
+from pathlib import Path
 
 # --- OpenAI client ---
 try:
@@ -13,9 +17,6 @@ try:
     _HAS_OPENAI = True
 except Exception:
     _HAS_OPENAI = False
-
-# --- Extracción de texto ---
-from pathlib import Path
 
 # PDF y DOCX (asegúrate de tenerlos en requirements)
 try:
@@ -32,7 +33,9 @@ except Exception:
 
 ai_router = APIRouter()
 
-# -------------------- Seguridad básica para endpoints privados --------------------
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
+# -------------------- Seguridad básica --------------------
 def token_gate(authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
     """
     Gate mínimo: espera Authorization: Bearer <algo>.
@@ -40,7 +43,6 @@ def token_gate(authorization: Optional[str] = Header(default=None)) -> Dict[str,
     """
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "Missing token")
-    # Aquí solo validamos que exista un token; si quieres comprueba el token contra tu tabla "sessions".
     return {"ok": True}
 
 # -------------------- Utilidades OpenAI --------------------
@@ -54,6 +56,7 @@ def _client():
 
 MODEL_GENERAL = os.getenv("OPENAI_MODEL_GENERAL", "gpt-4o-mini")
 MODEL_ASSIST  = os.getenv("OPENAI_MODEL_ASSIST",  "gpt-4o")
+MODEL_VISION  = os.getenv("OPENAI_MODEL_VISION",  "gpt-4o")  # mismo modelo para visión
 
 # -------------------- IA pública (institucional) --------------------
 class CompleteIn(BaseModel):
@@ -66,9 +69,13 @@ def ai_complete(body: CompleteIn):
         resp = client.chat.completions.create(
             model=MODEL_GENERAL,
             messages=[
-                {"role":"system","content":"Eres el asistente institucional de MEDIAZION. Responde claro, amable y sin pedir ni retener datos personales."},
-                {"role":"user","content": body.prompt}
-            ]
+                {
+                    "role": "system",
+                    "content": "Eres el asistente institucional de MEDIAZION. "
+                               "Responde claro, amable y sin pedir ni retener datos personales.",
+                },
+                {"role": "user", "content": body.prompt},
+            ],
         )
         out = resp.choices[0].message.content
         return {"ok": True, "text": out}
@@ -84,26 +91,27 @@ def ai_assist(body: AssistIn, _=Depends(token_gate)):
     client = _client()
     system = (
         "Eres el asistente profesional de MEDIAZION. Ayudas a mediadores a redactar actas, resúmenes de "
-        "sesiones y comunicaciones. Sé preciso, confidencial, evita datos personales salvo que el usuario lo aporte."
+        "sesiones y comunicaciones. Sé preciso, confidencial, evita datos personales salvo que el usuario lo aporte. "
+        "No inventes acuerdos ni datos si no se dan."
     )
     try:
         resp = client.chat.completions.create(
             model=MODEL_ASSIST,
             messages=[
-                {"role":"system","content": system},
-                {"role":"user","content": body.prompt}
-            ]
+                {"role": "system", "content": system},
+                {"role": "user", "content": body.prompt},
+            ],
         )
         out = resp.choices[0].message.content
         return {"ok": True, "text": out}
     except Exception as ex:
         raise HTTPException(500, f"IA error: {ex}")
 
-# -------------------- IA con documento (TXT/MD/PDF/DOCX) --------------------
+# -------------------- IA con documento (TXT/MD/PDF/DOCX/IMÁGENES) --------------------
 class AssistWithIn(BaseModel):
-    doc_url: str   # e.g. "/uploads/123/doc_1729960000.pdf" o "https://..."
+    doc_url: str   # e.g. "/api/upload/get/xxx" o "https://..."
     prompt: str
-    max_chars: Optional[int] = 120_000  # límite de texto para no desbordar al modelo
+    max_chars: Optional[int] = 120_000  # límite de texto
 
 def _is_http(u: str) -> bool:
     return u.lower().startswith("http://") or u.lower().startswith("https://")
@@ -120,7 +128,8 @@ async def _download_http(url: str, max_bytes: int = 8 * 1024 * 1024) -> tuple[st
         filename = None
         cd = r.headers.get("content-disposition") or ""
         m = re.search(r'filename="?([^"]+)"?', cd, flags=re.IGNORECASE)
-        if m: filename = m.group(1)
+        if m:
+            filename = m.group(1)
         if not filename:
             filename = url.split("?")[0].rstrip("/").split("/")[-1] or "doc.bin"
         return filename, content
@@ -166,37 +175,76 @@ def _extract_text_bytes(data: bytes, ext: str) -> str:
 
     raise HTTPException(415, "Tipo de documento no soportado. Usa TXT, MD, PDF o DOCX.")
 
+def _vision_from_image_bytes(data: bytes, prompt: str) -> str:
+    """
+    Usa GPT-4o con visión para analizar una imagen + prompt.
+    Codificamos la imagen como base64 data URL.
+    """
+    client = _client()
+    b64 = base64.b64encode(data).decode("ascii")
+    data_url = f"data:image/jpeg;base64,{b64}"
+
+    system = (
+        "Eres un asistente jurídico-profesional de MEDIAZION. Vas a recibir una imagen "
+        "(por ejemplo, un documento escaneado, una pizarra con notas o un fragmento de acta) "
+        "junto con un encargo. Extrae la información relevante de la imagen y responde con rigor, "
+        "pensando en mediación, acuerdos y comunicaciones claras. Si algo no se ve bien, dilo."
+    )
+
+    try:
+        resp = client.chat.completions.create(
+            model=MODEL_VISION,
+            messages=[
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                },
+            ],
+        )
+        out = resp.choices[0].message.content
+        return out
+    except Exception as ex:
+        raise HTTPException(500, f"IA (imagen) error: {ex}")
+
 @ai_router.post("/assist_with")
 async def ai_assist_with(body: AssistWithIn, _=Depends(token_gate)):
     """
     Usa IA con un documento adjunto (subido o remoto) + prompt del usuario.
-    Lee: /uploads/{id}/{fname} o http(s)://...
-    Extrae texto (TXT/MD/PDF/DOCX), recorta y llama al modelo profesional.
+    Lee: /api/upload/get/{fname} o http(s)://...
+    Si es TXT/MD/PDF/DOCX → extrae texto y redacta.
+    Si es una IMAGEN (JPG/PNG/WEBP/GIF) → usa GPT-4o con visión.
     """
-    # 1) Leer bytes del doc
     filename = "doc.bin"
     raw = b""
+
     if _is_http(body.doc_url):
         filename, raw = await _download_http(body.doc_url)
     else:
-        # doc_url local: normalmente empieza por /uploads/...
         local = body.doc_url
         if local.startswith("/"):
-            local = "." + local  # monta ruta relativa
+            local = "." + local
         path = Path(local).resolve()
-        # Seguridad mínima: solo leer dentro del directorio actual
         if str(path).find(str(Path(".").resolve())) != 0:
             raise HTTPException(403, "Ruta no permitida")
         raw = _read_local(path)
         filename = path.name
 
-    # 2) Extraer texto
     ext = "." + filename.split(".")[-1].lower() if "." in filename else ".bin"
+
+    # Si es imagen → visión
+    if ext in IMAGE_EXTS:
+        out = _vision_from_image_bytes(raw, body.prompt)
+        return {"ok": True, "text": out}
+
+    # Si es texto → extraemos
     text = _extract_text_bytes(raw, ext)
     if not text.strip():
         raise HTTPException(400, "El documento no tiene texto legible")
 
-    # 3) Recortar y construir prompt
     max_chars = body.max_chars or 120_000
     if len(text) > max_chars:
         text = text[:max_chars] + "\n\n[...texto recortado por longitud...]"
@@ -208,15 +256,14 @@ async def ai_assist_with(body: AssistWithIn, _=Depends(token_gate)):
     )
     user_message = f"{body.prompt}\n\n=== DOCUMENTO INTEGRAL ===\n{text}"
 
-    # 4) Llamar a OpenAI
     client = _client()
     try:
         resp = client.chat.completions.create(
             model=MODEL_ASSIST,
             messages=[
-                {"role":"system","content": system},
-                {"role":"user","content": user_message}
-            ]
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_message},
+            ],
         )
         out = resp.choices[0].message.content
         return {"ok": True, "text": out}
