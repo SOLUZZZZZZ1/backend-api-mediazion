@@ -1,21 +1,65 @@
-# news_routes.py — Actualidad básica para Mediazion (puedes mejorar fuentes más tarde)
-from fastapi import APIRouter
+# news_routes.py — Actualidad MEDIAZION (noticias en tiempo real)
+
+from fastapi import APIRouter, Query, HTTPException
+import feedparser
 
 news_router = APIRouter()
 
+SOURCES = {
+    "BOE": "https://www.boe.es/rss/boe_es.xml",
+    "CONFILEGAL": "https://confilegal.com/feed/",
+    "LEGALTODAY": "https://www.legaltoday.com/feed/",
+    "CGPJ": "https://www.poderjudicial.es/cgpj/es/Servicios/rss/Noticias.xml",
+}
+
+DEFAULT_TERMS = ["mediación", "conflicto", "acuerdo", "extrajudicial", "mediador"]
+
+
 @news_router.get("/news")
-def list_news():
+def list_news(
+    q: str | None = Query(None, description="Filtro opcional, por ejemplo: 'mediación familiar'")
+):
     """
-    De momento devolvemos un listado estático. Más adelante puedes integrar BOE, Confilegal, etc.
-    Lo importante ahora es que /api/news deje de dar 404.
+    Devuelve noticias recientes de BOE, Confilegal, LegalToday y CGPJ.
+    Si no se pasa 'q', se filtra automáticamente por temas de mediación.
     """
-    items = [
-        {
-            "title": "Ejemplo de noticia",
-            "summary": "Aquí aparecerá una noticia real cuando conectemos BOE/Confilegal.",
-            "url": "https://www.boe.es/",
-            "date": "2025-11-13",
-            "source": "INTERNAS",
+    try:
+        term = (q or "").strip().lower()
+        items = []
+
+        for name, url in SOURCES.items():
+            feed = feedparser.parse(url)
+
+            for e in feed.entries[:30]:
+                title = e.get("title", "") or ""
+                summary = e.get("summary", "") or e.get("description", "") or ""
+                link = e.get("link", "") or ""
+                published = e.get("published", "") or e.get("updated", "") or ""
+
+                blob = (title + " " + summary).lower()
+
+                if term:
+                    # Buscar lo que el usuario pida
+                    if term not in blob:
+                        continue
+                else:
+                    # Temas relacionados con mediación
+                    if not any(t in blob for t in DEFAULT_TERMS):
+                        continue
+
+                items.append({
+                    "title": title.strip(),
+                    "summary": summary.strip(),
+                    "url": link,
+                    "date": published,
+                    "source": name,
+                })
+
+        return {
+            "ok": True,
+            "count": len(items),
+            "items": items
         }
-    ]
-    return {"ok": True, "items": items}
+
+    except Exception as e:
+        raise HTTPException(500, f"Error obteniendo noticias: {e}")
