@@ -1,33 +1,30 @@
-# upload_routes.py — versión estable MEDIAZION (corrige subida de Word/PDF)
+# upload_routes.py — versión compatible Render (usa /tmp)
 import os
-from fastapi import APIRouter, File, UploadFile, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi.responses import FileResponse
+import uuid
 
 upload_router = APIRouter(prefix="/upload", tags=["upload"])
 
-UPLOAD_DIR = "uploads"
+UPLOAD_DIR = "/tmp/mediazion_uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 @upload_router.post("/file")
 async def upload_file(file: UploadFile = File(...)):
-    """
-    Guarda un archivo subido (PDF/DOC/DOCX/TXT/MD) y devuelve su URL accesible desde /uploads.
-    """
     try:
-        filename = file.filename.replace(" ", "_")
-        path = os.path.join(UPLOAD_DIR, filename)
-
-        # Leer contenido y guardar en disco
+        ext = file.filename.split(".")[-1]
+        newname = f"{uuid.uuid4()}.{ext}"
+        path = os.path.join(UPLOAD_DIR, newname)
         content = await file.read()
         with open(path, "wb") as f:
             f.write(content)
-
-        # Respuesta estándar
-        return JSONResponse({
-            "ok": True,
-            "filename": filename,
-            "url": f"/uploads/{filename}"
-        })
-
+        return {"ok": True, "url": f"/api/upload/get/{newname}"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al guardar archivo: {e}")
+        raise HTTPException(500, f"Error upload: {e}")
+
+@upload_router.get("/get/{filename}")
+def get_file(filename: str):
+    path = os.path.join(UPLOAD_DIR, filename)
+    if not os.path.isfile(path):
+        raise HTTPException(404, "Archivo no encontrado")
+    return FileResponse(path)
