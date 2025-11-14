@@ -1,13 +1,13 @@
-# perfil_routes.py — Gestión de perfil del mediador (alias/bio/web/foto/cv) + listado público
+# perfil_routes.py — Gestión de perfil del mediador (alias/bio/web/foto/cv)
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-from typing import Optional, List
+from pydantic import BaseModel, EmailStr
+from typing import Optional
 from db import pg_conn
 
 perfil_router = APIRouter(prefix="/perfil", tags=["perfil"])
 
 class PerfilIn(BaseModel):
-    email: str
+    email: EmailStr
     public_slug: Optional[str] = None
     bio: Optional[str] = None
     website: Optional[str] = None
@@ -16,6 +16,7 @@ class PerfilIn(BaseModel):
 
 @perfil_router.get("")
 def get_perfil(email: str):
+    email = email.lower().strip()
     with pg_conn() as cx:
         with cx.cursor() as cur:
             cur.execute(
@@ -29,6 +30,7 @@ def get_perfil(email: str):
             row = cur.fetchone()
             if not row:
                 raise HTTPException(404, "No encontrado")
+
     return {
         "ok": True,
         "perfil": {
@@ -49,10 +51,12 @@ def save_perfil(body: PerfilIn):
     email = body.email.lower().strip()
     with pg_conn() as cx:
         with cx.cursor() as cur:
+            # comprobar que el mediador existe
             cur.execute("SELECT id FROM mediadores WHERE email=LOWER(%s);", (email,))
             row = cur.fetchone()
             if not row:
                 raise HTTPException(404, "Mediador no encontrado")
+
             cur.execute(
                 """
                 UPDATE mediadores SET
@@ -61,4 +65,16 @@ def save_perfil(body: PerfilIn):
                     website     = COALESCE(%s, website),
                     photo_url   = COALESCE(%s, photo_url),
                     cv_url      = COALESCE(%s, cv_url)
-                 WHERE
+                 WHERE email = LOWER(%s);
+                """,
+                (
+                    body.public_slug,
+                    body.bio,
+                    body.website,
+                    body.photo_url,
+                    body.cv_url,
+                    email,
+                ),
+            )
+        cx.commit()
+    return {"ok": True}
