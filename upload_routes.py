@@ -1,6 +1,6 @@
-# upload_routes.py — versión compatible Render (usa /tmp)
+# upload_routes.py — subida de archivos + acceso por /api/upload/get
 import os
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, File, UploadFile, HTTPException
 from fastapi.responses import FileResponse
 import uuid
 
@@ -15,10 +15,16 @@ async def upload_file(file: UploadFile = File(...)):
         ext = file.filename.split(".")[-1]
         newname = f"{uuid.uuid4()}.{ext}"
         path = os.path.join(UPLOAD_DIR, newname)
+
         content = await file.read()
         with open(path, "wb") as f:
             f.write(content)
-        return {"ok": True, "url": f"/api/upload/get/{newname}"}
+
+        return {
+            "ok": True,
+            "url": f"/api/upload/get/{newname}"
+        }
+
     except Exception as e:
         raise HTTPException(500, f"Error upload: {e}")
 
