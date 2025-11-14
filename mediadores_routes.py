@@ -1,139 +1,132 @@
-# mediadores_routes.py — COMPLETO Y FINAL
+# mediadores_routes.py — estado PRO/BASIC + listado público (Directorio)
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, EmailStr
+from pydantic import EmailStr
+from typing import Optional, List
 from db import pg_conn
-import bcrypt
-from datetime import datetime, timedelta, timezone
 
 mediadores_router = APIRouter()
 
-
-# ============================
-#  MODELO DE ALTA
-# ============================
-
-class MediadorRegisterIn(BaseModel):
-    name: str
-    email: EmailStr
-    phone: str
-    provincia: str
-    especialidad: str
-    dni_cif: str
-    tipo: str
-    accept: bool = True
-
-
-# ============================
-#  ALTA DE MEDIADORES
-# ============================
-
-@mediadores_router.post("/mediadores/register")
-def mediador_register(body: MediadorRegisterIn):
-    email = body.email.lower().strip()
-
-    try:
-        with pg_conn() as cx, cx.cursor() as cur:
-
-            # ¿Existe ya?
-            cur.execute("SELECT 1 FROM mediadores WHERE LOWER(email)=LOWER(%s);", (email,))
-            if cur.fetchone():
-                raise HTTPException(409, "Este correo ya está registrado")
-
-            # Contraseña temporal
-            temp_password = "Mediazion123"   # puedes cambiarla o hacerla aleatoria
-            hashed = bcrypt.hashpw(temp_password.encode(), bcrypt.gensalt()).decode()
-
-            # Insertar usuario
-            cur.execute("""
-                INSERT INTO mediadores
-                (name, email, phone, provincia, especialidad, dni_cif, tipo,
-                 status, subscription_status, password_hash, trial_used,
-                 created_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,
-                        'active','trialing',%s,TRUE,
-                        NOW());
-            """, (
-                body.name, email, body.phone, body.provincia,
-                body.especialidad, body.dni_cif, body.tipo,
-                hashed
-            ))
-
-            cx.commit()
-
-        # IMPORTANTE: devolver contraseña temporal
-        return {
-            "ok": True,
-            "message": "Alta correcta. Usa la contraseña temporal enviada.",
-            "temp_password": temp_password
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"Error registrando mediador: {e}")
-
-
-# ============================
-# ESTADO DEL MEDIADOR
-# ============================
-
+# ---------- ESTADO MEDIADOR ----------
 @mediadores_router.get("/mediadores/status")
 def mediador_status(email: EmailStr):
+    """
+    Devuelve el estado PRO/BÁSICO del mediador (panel).
+    """
     try:
         with pg_conn() as cx, cx.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT subscription_status, status
-                FROM mediadores
-                WHERE LOWER(email)=LOWER(%s)
-            """, (email,))
+                  FROM mediadores
+                 WHERE LOWER(email)=LOWER(%s)
+                """,
+                (email,),
+            )
             row = cur.fetchone()
 
         if not row:
             return {"email": email, "subscription_status": "none", "status": "missing"}
 
         subscription_status, status = row
+
         return {
             "email": email,
             "subscription_status": subscription_status or "none",
-            "status": status or "active"
+            "status": status or "active",
         }
 
     except Exception as e:
         raise HTTPException(500, f"Error consultando estado: {e}")
 
 
-# ============================
-# ACTIVAR PRUEBA GRATIS (7 días)
-# ============================
-
+# ---------- ACTIVAR TRIAL ----------
 @mediadores_router.post("/mediadores/set_trial")
 def set_trial(email: EmailStr, days: int = 7):
-
-    now = datetime.now(timezone.utc)
-    end = now + timedelta(days=days)
-
+    """
+    Activa PRO (trial) del mediador por X días.
+    """
     try:
         with pg_conn() as cx, cx.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 UPDATE mediadores
                    SET subscription_status='trialing',
                        status='active',
-                       trial_used=TRUE,
-                       trial_start=%s,
-                       trial_end=%s
+                       trial_used=true,
+                       trial_start=NOW(),
+                       trial_end=NOW() + (%s || ' days')::interval
                  WHERE LOWER(email)=LOWER(%s)
-            """, (now, end, email))
-
+                """,
+                (days, email),
+            )
             updated = cur.rowcount
             cx.commit()
 
         if updated == 0:
             raise HTTPException(404, "Mediador no encontrado")
 
-        return {"ok": True, "trial_until": end.isoformat()}
-
-    except HTTPException:
-        raise
+        return {"ok": True}
     except Exception as e:
         raise HTTPException(500, f"Error activando trial: {e}")
+
+
+# ---------- LISTADO PÚBLICO (Directorio) ----------
+@mediadores_router.get("/mediadores/public")
+def mediadores_public(
+    q: Optional[str] = None,
+    provincia: Optional[str] = None,
+    especialidad: Optional[str] = None,
+    limit: int = 100,
+):
+    """
+    Directorio público de mediadores activos.
+    Filtra por nombre, bio, provincia o especialidad.
+    """
+    sql = """
+    SELECT id, name, public_slug, bio, website, photo_url, cv_url, provincia, especialidad
+      FROM mediadores
+     WHERE status='active'
+    """
+    params: List = []
+
+    if q:
+        sql += " AND (LOWER(name) LIKE LOWER(%s) OR LOWER(bio) LIKE LOWER(%s))"
+        like = f"%{q}%"
+        params += [like, like]
+
+    if provincia:
+        sql += " AND LOWER(provincia)=LOWER(%s)"
+        params.append(provincia.lower())
+
+    if especialidad:
+        sql += " AND LOWER(especialidad)=LOWER(%s)"
+        params.append(especialidad.lower())
+
+    sql += " ORDER BY created_at DESC LIMIT %s"
+    params.append(min(200, max(1, limit)))
+
+    try:
+        with pg_conn() as cx, cx.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall()
+    except Exception as e:
+        raise HTTPException(500, f"Error listando mediadores: {e}")
+
+    items = []
+    for r in rows:
+        items.append(
+            {
+                "id": r[0],
+                "name": r[1],
+                "public_slug": r[2],
+                "bio": r[3] or "",
+                "website": r[4] or "",
+                "photo_url": r[5] or "",
+                "cv_url": r[6] or "",
+                "provincia": r[7] or "",
+                "especialidad": r[8] or "",
+            }
+        )
+
+    return {"ok": True, "items": items}
