@@ -63,7 +63,7 @@ except:
 
 # -------------- REGISTER ROUTERS --------------
 app.include_router(auth_router, prefix="/api", tags=["auth"])
-app.include_router(ai_router, prefix="/api", tags=["ai"])
+app.include_router(ai_router, prefix="/api/ai", tags=["ai"])
 app.include_router(upload_router, prefix="/api", tags=["upload"])
 app.include_router(actas_router, prefix="/api", tags=["actas"])
 app.include_router(contact_router, prefix="/api", tags=["contact"])
