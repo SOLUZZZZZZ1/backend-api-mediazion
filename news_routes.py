@@ -11,15 +11,12 @@ SOURCES = {
     "LEGALTODAY": "https://www.legaltoday.com/feed/",
 }
 
-TERMS = ["mediación", "mediador", "conflicto", "acuerdo", "extrajudicial"]
-
-
 @news_router.get("/news")
-def list_news(q: str | None = Query(None, description="Filtro opcional, ej.: 'mediación familiar'")):
+def list_news(q: str | None = Query(None, description="Filtro opcional, ej.: 'mediación'")):
     """
-    Devuelve noticias recientes de varias fuentes.
-    - Si NO hay 'q', devuelve las últimas noticias tal cual (sin filtrar).
-    - Si hay 'q', filtra por el término indicado en título/resumen.
+    Devuelve noticias recientes de varias fuentes jurídicas.
+    - Si NO se pasa 'q', devuelve las últimas noticias (sin filtrar).
+    - Si se pasa 'q', filtra por ese término en título / resumen.
     """
     try:
         search = (q or "").strip().lower()
@@ -40,17 +37,17 @@ def list_news(q: str | None = Query(None, description="Filtro opcional, ej.: 'me
                     if search not in blob:
                         continue
 
-                # Si NO hay búsqueda, no filtramos: devolvemos los últimos artículos
-                items.append({
-                    "title": title.strip(),
-                    "summary": summary.strip(),
-                    "url": link,
-                    "date": date,
-                    "source": name,
-                })
+                items.append(
+                    {
+                        "title": title.strip(),
+                        "summary": summary.strip(),
+                        "url": link,
+                        "date": date,
+                        "source": name,
+                    }
+                )
 
         return {"ok": True, "items": items}
+
     except Exception as e:
         raise HTTPException(500, f"Error obteniendo noticias: {e}")
-
-
