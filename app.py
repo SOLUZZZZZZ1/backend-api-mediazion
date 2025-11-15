@@ -71,7 +71,6 @@ app.include_router(perfil_router, prefix="/api", tags=["perfil"])
 app.include_router(voces_router, prefix="/api", tags=["voces"])
 app.include_router(news_router, prefix="/api", tags=["news"])
 app.include_router(ai_legal_chat, prefix="/api")
-
 if ai_legal_router:
     app.include_router(ai_legal_router, prefix="/api", tags=["ai-legal"])
 
