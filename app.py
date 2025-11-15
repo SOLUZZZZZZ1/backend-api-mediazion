@@ -41,23 +41,24 @@ from actas_routes import actas_router
 from contact_routes import contact_router
 from voces_routes import voces_router
 from news_routes import news_router
-from ai_legal_chat_routes import ai_legal_chat
 from perfil_routes import perfil_router
 
-
+# IA Legal unificada (chat + buscador)
 try:
-    from ai_legal_routes import ai_legal_router
-except:
-    ai_legal_router = None
+    from ai_legal_routes import ai_legal
+except Exception:
+    ai_legal = None
 
+# Mediadores
 try:
     from mediadores_routes import mediadores_router
-except:
+except Exception:
     mediadores_router = None
 
+# Migraciones / admin
 try:
     from migrate_routes import router as migrate_router
-except:
+except Exception:
     migrate_router = None
 
 
@@ -70,9 +71,9 @@ app.include_router(contact_router, prefix="/api", tags=["contact"])
 app.include_router(perfil_router, prefix="/api", tags=["perfil"])
 app.include_router(voces_router, prefix="/api", tags=["voces"])
 app.include_router(news_router, prefix="/api", tags=["news"])
-app.include_router(ai_legal_chat, prefix="/api")
-if ai_legal_router:
-    app.include_router(ai_legal_router, prefix="/api", tags=["ai-legal"])
+
+if ai_legal:
+    app.include_router(ai_legal, prefix="/api", tags=["ai-legal"])
 
 if mediadores_router:
     app.include_router(mediadores_router, prefix="/api", tags=["mediadores"])
