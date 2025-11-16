@@ -1,20 +1,16 @@
 """
 casos_routes.py — Gestor de casos/expedientes para mediadores PRO en Mediazion.
 
-Este router añade el recurso /api/casos con:
-- GET /api/casos           → listar casos del mediador autenticado
-- POST /api/casos          → crear caso nuevo
-- GET /api/casos/{id}      → detalle de un caso
-- PUT /api/casos/{id}      → actualizar caso
-- DELETE /api/casos/{id}   → (opcional) eliminar/archivar caso
+Endpoints (una vez incluido en app.py con prefix="/api"):
 
-IMPORTANTE:
-- Está pensado para encajar con tu backend FastAPI actual.
-- Solo tendrás que ajustar 2–3 imports marcados con el comentario:  # ⬅ AJUSTAR IMPORT
+- GET    /api/casos           → listar casos del mediador autenticado
+- POST   /api/casos           → crear caso nuevo
+- GET    /api/casos/{id}      → detalle de un caso
+- PUT    /api/casos/{id}      → actualizar caso
+- DELETE /api/casos/{id}      → eliminar caso
 """
-
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -22,51 +18,56 @@ from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, JSON
 from sqlalchemy.orm import Session
 
 # ==========================
-# IMPORTS A AJUSTAR
+# IMPORTS ADAPTADOS A MEDIAZION
 # ==========================
 
-# Usa la misma Base y get_db que tu proyecto.
-# Si tu módulo se llama distinto (por ejemplo "db" en lugar de "database"),
-# solo cambia la ruta del import.
-from .database import Base, get_db   # ⬅ AJUSTAR IMPORT si es necesario
+# Usa el mismo módulo que ya usas para la base de datos.
+# Si en tu proyecto el archivo se llama distinto, cambia 'database'
+# por el nombre real (por ejemplo, 'db').
+from database import Base, get_db  # ← Si tu módulo se llama distinto, cambia aquí solo el nombre.
 
-# Si ya tienes un modelo "Mediador" no hace falta importarlo aquí,
-# solo usamos la FK "mediadores.id" a nivel SQL. No es obligatorio
-# tener la relación en Python para que funcione.
+# IMPORTANTE: aquí asumimos que en auth_routes tienes una función
+# que devuelve el usuario/mediador autenticado a partir del JWT.
+# Si el nombre es distinto, ajusta el import.
+from auth_routes import get_current_user
 
-# Dependencia que devuelve el mediador autenticado.
-# Si ya tienes algo como get_current_user / get_current_mediador
-# en otro módulo, impórtalo y úsalo.
-# EJEMPLO:
-# from .auth_routes import get_current_mediador
-#
-# De momento definimos un "stub" tipado que puedes enlazar con tu lógica real.
+
 class MediadorIdentity(BaseModel):
     id: int
     email: Optional[str] = None
     subscription_status: Optional[str] = None
 
 
-def get_current_mediador() -> MediadorIdentity:
+def get_current_mediador(user: Any = Depends(get_current_user)) -> MediadorIdentity:
     """
-    ⛔ IMPORTANTE:
-    ----------------
-    ESTA FUNCIÓN ES SOLO UN "PLACEHOLDER" PARA QUE EL ARCHIVO SEA AUTOCONTENIDO.
-
-    En tu proyecto REAL debes:
-    - Eliminar esta función.
-    - Importar la dependencia que ya uses para extraer el mediador del JWT,
-      por ejemplo:
-
-        from .auth_routes import get_current_mediador
-
-    y usarla en los Depends() de los endpoints de abajo.
+    Adapta el objeto devuelto por get_current_user a un esquema sencillo
+    con id / email / subscription_status.
     """
-    # Esto evitará que el servidor arranque si alguien olvida sustituirla.
-    raise RuntimeError(
-        "get_current_mediador() de casos_routes.py es un placeholder. "
-        "Importa la dependencia real desde tu módulo de autenticación."
-    )
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No autenticado.",
+        )
+
+    # user puede ser un objeto ORM o un dict; intentamos ambas cosas.
+    def _get(attr: str):
+        if hasattr(user, attr):
+            return getattr(user, attr)
+        if isinstance(user, dict):
+            return user.get(attr)
+        return None
+
+    uid = _get("id")
+    if not uid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Usuario sin id.",
+        )
+
+    email = _get("email")
+    subs = _get("subscription_status") or _get("plan") or None
+
+    return MediadorIdentity(id=uid, email=email, subscription_status=subs)
 
 
 # ==========================
@@ -151,21 +152,20 @@ class CasoOut(BaseModel):
 # ROUTER
 # ==========================
 
-router = APIRouter(
-    prefix="/casos",
-    tags=["casos"],
-)
+casos_router = APIRouter()
 
 
 def ensure_pro_user(mediador: MediadorIdentity):
     """
     Control de acceso PRO/BASIC:
-    - Permite acceso si subscription_status es 'active' o 'trialing'.
+    - Permite acceso si subscription_status es 'active' o 'trialing' o 'pro'.
     - Restringe si es 'none' / 'expired' / etc.
     Ajusta los valores según tus enums reales.
+    Si NO tienes todavía este campo, puedes comentar la llamada a ensure_pro_user
+    en los endpoints hasta que lo actives.
     """
     status_value = (mediador.subscription_status or "").lower()
-    if status_value not in ("active", "trialing", "pro"):
+    if status_value and status_value not in ("active", "trialing", "pro"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Tu plan actual no incluye el gestor de casos.",
@@ -176,7 +176,7 @@ def ensure_pro_user(mediador: MediadorIdentity):
 # ENDPOINTS
 # ==========================
 
-@router.get("/", response_model=List[CasoOut])
+@casos_router.get("/casos", response_model=List[CasoOut])
 def listar_casos(
     db: Session = Depends(get_db),
     mediador: MediadorIdentity = Depends(get_current_mediador),
@@ -194,7 +194,7 @@ def listar_casos(
     return rows
 
 
-@router.post("/", response_model=CasoOut, status_code=status.HTTP_201_CREATED)
+@casos_router.post("/casos", response_model=CasoOut, status_code=status.HTTP_201_CREATED)
 def crear_caso(
     payload: CasoCreate,
     db: Session = Depends(get_db),
@@ -228,7 +228,7 @@ def crear_caso(
     return nuevo
 
 
-@router.get("/{caso_id}", response_model=CasoOut)
+@casos_router.get("/casos/{caso_id}", response_model=CasoOut)
 def obtener_caso(
     caso_id: int,
     db: Session = Depends(get_db),
@@ -254,7 +254,7 @@ def obtener_caso(
     return caso
 
 
-@router.put("/{caso_id}", response_model=CasoOut)
+@casos_router.put("/casos/{caso_id}", response_model=CasoOut)
 def actualizar_caso(
     caso_id: int,
     payload: CasoUpdate,
@@ -304,7 +304,7 @@ def actualizar_caso(
     return caso
 
 
-@router.delete("/{caso_id}", status_code=status.HTTP_204_NO_CONTENT)
+@casos_router.delete("/casos/{caso_id}", status_code=status.HTTP_204_NO_CONTENT)
 def eliminar_caso(
     caso_id: int,
     db: Session = Depends(get_db),
