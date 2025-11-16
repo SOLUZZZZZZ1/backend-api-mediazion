@@ -1,337 +1,305 @@
-"""
-casos_routes.py — Gestor de casos/expedientes para mediadores PRO en Mediazion.
+# casos_routes.py — Gestor de casos/expedientes para mediadores PRO (PostgreSQL + pg_conn)
+#
+# Endpoints expuestos (una vez incluido en app.py con prefix="/api"):
+#
+#   GET    /api/casos?email=...          → listar casos del mediador
+#   POST   /api/casos                    → crear caso nuevo
+#   GET    /api/casos/{caso_id}?email=   → detalle (propietario)
+#   PUT    /api/casos/{caso_id}          → actualizar caso (propietario)
+#   DELETE /api/casos/{caso_id}?email=   → eliminar caso (propietario)
+#
+# Diseño:
+#   - Sin SQLAlchemy, solo PostgreSQL directo usando db.pg_conn().
+#   - Identificación por email (igual que voces, mediadores, perfil).
+#   - Tabla "casos" se crea automáticamente si no existe.
 
-Endpoints (una vez incluido en app.py con prefix="/api"):
-
-- GET    /api/casos           → listar casos del mediador autenticado
-- POST   /api/casos           → crear caso nuevo
-- GET    /api/casos/{id}      → detalle de un caso
-- PUT    /api/casos/{id}      → actualizar caso
-- DELETE /api/casos/{id}      → eliminar caso
-"""
 from datetime import datetime
-from typing import List, Optional, Any
+from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, JSON
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, EmailStr
 
-# ==========================
-# IMPORTS ADAPTADOS A MEDIAZION
-# ==========================
+from db import pg_conn  # mismo helper que usas en auth_routes / migrate_routes
 
-# Usa el mismo módulo que ya usas para la base de datos.
-# Si en tu proyecto el archivo se llama distinto, cambia 'database'
-# por el nombre real (por ejemplo, 'db').
-from database import Base, get_db  # ← Si tu módulo se llama distinto, cambia aquí solo el nombre.
-
-# IMPORTANTE: aquí asumimos que en auth_routes tienes una función
-# que devuelve el usuario/mediador autenticado a partir del JWT.
-# Si el nombre es distinto, ajusta el import.
-from auth_routes import get_current_user
+casos_router = APIRouter(prefix="/casos", tags=["casos"])
 
 
-class MediadorIdentity(BaseModel):
-    id: int
-    email: Optional[str] = None
-    subscription_status: Optional[str] = None
+# ----------------- SQL: creación de tabla (idempotente) -----------------
+
+SQL_CREATE_CASOS = """
+CREATE TABLE IF NOT EXISTS casos (
+  id SERIAL PRIMARY KEY,
+  mediador_email  TEXT NOT NULL,
+  titulo          TEXT NOT NULL,
+  descripcion     TEXT,
+  estado          TEXT NOT NULL DEFAULT 'abierto',
+  archivos        JSONB,
+  fecha_inicio    TIMESTAMP DEFAULT NOW(),
+  fecha_cierre    TIMESTAMP NULL,
+  created_at      TIMESTAMP DEFAULT NOW(),
+  updated_at      TIMESTAMP DEFAULT NOW()
+);
+"""
 
 
-def get_current_mediador(user: Any = Depends(get_current_user)) -> MediadorIdentity:
-    """
-    Adapta el objeto devuelto por get_current_user a un esquema sencillo
-    con id / email / subscription_status.
-    """
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="No autenticado.",
-        )
-
-    # user puede ser un objeto ORM o un dict; intentamos ambas cosas.
-    def _get(attr: str):
-        if hasattr(user, attr):
-            return getattr(user, attr)
-        if isinstance(user, dict):
-            return user.get(attr)
-        return None
-
-    uid = _get("id")
-    if not uid:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Usuario sin id.",
-        )
-
-    email = _get("email")
-    subs = _get("subscription_status") or _get("plan") or None
-
-    return MediadorIdentity(id=uid, email=email, subscription_status=subs)
+def _ensure_table(cur) -> None:
+    """Crea la tabla 'casos' si aún no existe (idempotente)."""
+    cur.execute(SQL_CREATE_CASOS)
 
 
-# ==========================
-# MODELO SQLALCHEMY
-# ==========================
+# ----------------- Esquemas Pydantic -----------------
 
-class Caso(Base):
-    __tablename__ = "casos"
-
-    id = Column(Integer, primary_key=True, index=True)
-    mediador_id = Column(Integer, ForeignKey("mediadores.id"), index=True)
-
-    titulo = Column(String(255), nullable=False)
-    descripcion = Column(Text, nullable=True)
-    estado = Column(String(50), nullable=False, default="abierto")
-
-    # Para futuro: adjuntar documentos del caso (URLs S3)
-    # Ej: [{"name": "acta.pdf", "url": "https://....", "type": "pdf"}]
-    archivos = Column(JSON, nullable=True)
-
-    fecha_inicio = Column(DateTime, nullable=False, default=datetime.utcnow)
-    fecha_cierre = Column(DateTime, nullable=True)
-
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(
-        DateTime,
-        nullable=False,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-    )
-
-
-# ==========================
-# ESQUEMAS Pydantic
-# ==========================
-
-class ArchivoItem(BaseModel):
-    name: str
-    url: str
-    type: Optional[str] = None
-
-
-class CasoBase(BaseModel):
-    titulo: str = Field(..., max_length=255)
+class CasoCreate(BaseModel):
+    email: EmailStr
+    titulo: str
     descripcion: Optional[str] = None
-    estado: Optional[str] = Field(
-        default="abierto",
-        description="abierto | en_curso | cerrado",
-    )
-    archivos: Optional[List[ArchivoItem]] = None
-
-
-class CasoCreate(CasoBase):
-    pass
+    estado: Optional[str] = "abierto"
 
 
 class CasoUpdate(BaseModel):
-    titulo: Optional[str] = Field(None, max_length=255)
+    email: EmailStr
+    titulo: Optional[str] = None
     descripcion: Optional[str] = None
-    estado: Optional[str] = Field(
-        default=None,
-        description="abierto | en_curso | cerrado",
-    )
-    archivos: Optional[List[ArchivoItem]] = None
+    estado: Optional[str] = None
 
 
 class CasoOut(BaseModel):
     id: int
-    mediador_id: int
+    mediador_email: EmailStr
     titulo: str
     descripcion: Optional[str]
     estado: str
-    archivos: Optional[List[ArchivoItem]]
-    fecha_inicio: datetime
+    fecha_inicio: Optional[datetime]
     fecha_cierre: Optional[datetime]
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
 
     class Config:
         orm_mode = True
 
 
-# ==========================
-# ROUTER
-# ==========================
+# ----------------- Helpers de acceso -----------------
 
-casos_router = APIRouter()
-
-
-def ensure_pro_user(mediador: MediadorIdentity):
+def _row_to_dict(row) -> dict:
     """
-    Control de acceso PRO/BASIC:
-    - Permite acceso si subscription_status es 'active' o 'trialing' o 'pro'.
-    - Restringe si es 'none' / 'expired' / etc.
-    Ajusta los valores según tus enums reales.
-    Si NO tienes todavía este campo, puedes comentar la llamada a ensure_pro_user
-    en los endpoints hasta que lo actives.
+    Convierte una fila devuelta por psycopg/psycopg2 en un dict.
+    Funciona tanto si row es dict como si es tupla (SELECT con columnas en orden fijo).
     """
-    status_value = (mediador.subscription_status or "").lower()
-    if status_value and status_value not in ("active", "trialing", "pro"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Tu plan actual no incluye el gestor de casos.",
-        )
+    if row is None:
+        return {}
+
+    # Si es dict (psycopg3 con row_factory=dict_row)
+    if isinstance(row, dict):
+        return row
+
+    # Si es tupla, usamos el orden definido en los SELECT de abajo.
+    # SELECT id, mediador_email, titulo, descripcion, estado,
+    #        fecha_inicio, fecha_cierre, created_at, updated_at
+    return {
+        "id": row[0],
+        "mediador_email": row[1],
+        "titulo": row[2],
+        "descripcion": row[3],
+        "estado": row[4],
+        "fecha_inicio": row[5],
+        "fecha_cierre": row[6],
+        "created_at": row[7],
+        "updated_at": row[8],
+    }
 
 
-# ==========================
-# ENDPOINTS
-# ==========================
+# ----------------- ENDPOINTS -----------------
 
-@casos_router.get("/casos", response_model=List[CasoOut])
-def listar_casos(
-    db: Session = Depends(get_db),
-    mediador: MediadorIdentity = Depends(get_current_mediador),
-):
+@casos_router.get("", response_model=List[CasoOut])
+def listar_casos(email: EmailStr = Query(..., description="Email del mediador")):
     """
-    Devuelve SOLO los casos del mediador autenticado.
+    Devuelve todos los casos del mediador indicado por email.
     """
-    ensure_pro_user(mediador)
-    rows = (
-        db.query(Caso)
-        .filter(Caso.mediador_id == mediador.id)
-        .order_by(Caso.created_at.desc())
-        .all()
-    )
-    return rows
+    email_norm = email.strip().lower()
+    try:
+        with pg_conn() as cx, cx.cursor() as cur:
+            _ensure_table(cur)
+            cur.execute(
+                """
+                SELECT id, mediador_email, titulo, descripcion, estado,
+                       fecha_inicio, fecha_cierre, created_at, updated_at
+                  FROM casos
+                 WHERE LOWER(mediador_email) = LOWER(%s)
+                 ORDER BY created_at DESC;
+                """,
+                (email_norm,),
+            )
+            rows = cur.fetchall() or []
+    except Exception as e:
+        raise HTTPException(500, f"Error listando casos: {e}")
+
+    return [_row_to_dict(r) for r in rows]
 
 
-@casos_router.post("/casos", response_model=CasoOut, status_code=status.HTTP_201_CREATED)
-def crear_caso(
-    payload: CasoCreate,
-    db: Session = Depends(get_db),
-    mediador: MediadorIdentity = Depends(get_current_mediador),
-):
+@casos_router.post("", response_model=CasoOut)
+def crear_caso(body: CasoCreate):
     """
-    Crea un caso nuevo para el mediador autenticado.
+    Crea un caso nuevo asociado al email del mediador.
     """
-    ensure_pro_user(mediador)
+    email_norm = body.email.strip().lower()
+    titulo = (body.titulo or "").strip()
+    if not titulo:
+        raise HTTPException(400, "Título obligatorio")
 
-    now = datetime.utcnow()
-    fecha_cierre = None
-    if payload.estado and payload.estado.lower() == "cerrado":
-        fecha_cierre = now
+    estado = (body.estado or "abierto").strip().lower()
+    if estado not in ("abierto", "en_curso", "cerrado"):
+        estado = "abierto"
 
-    nuevo = Caso(
-        mediador_id=mediador.id,
-        titulo=payload.titulo.strip(),
-        descripcion=(payload.descripcion or "").strip() or None,
-        estado=(payload.estado or "abierto").lower(),
-        archivos=[a.dict() for a in (payload.archivos or [])] or None,
-        fecha_inicio=now,
-        fecha_cierre=fecha_cierre,
-        created_at=now,
-        updated_at=now,
-    )
+    try:
+        with pg_conn() as cx, cx.cursor() as cur:
+            _ensure_table(cur)
+            cur.execute(
+                """
+                INSERT INTO casos (mediador_email, titulo, descripcion, estado,
+                                   fecha_inicio, created_at, updated_at)
+                VALUES (LOWER(%s), %s, %s, %s, NOW(), NOW(), NOW())
+                RETURNING id, mediador_email, titulo, descripcion, estado,
+                          fecha_inicio, fecha_cierre, created_at, updated_at;
+                """,
+                (email_norm, titulo, body.descripcion, estado),
+            )
+            row = cur.fetchone()
+    except Exception as e:
+        raise HTTPException(500, f"No se pudo crear el caso: {e}")
 
-    db.add(nuevo)
-    db.commit()
-    db.refresh(nuevo)
-    return nuevo
+    if not row:
+        raise HTTPException(500, "No se pudo recuperar el caso creado.")
+
+    return _row_to_dict(row)
 
 
-@casos_router.get("/casos/{caso_id}", response_model=CasoOut)
-def obtener_caso(
-    caso_id: int,
-    db: Session = Depends(get_db),
-    mediador: MediadorIdentity = Depends(get_current_mediador),
-):
+@casos_router.get("/{caso_id}", response_model=CasoOut)
+def obtener_caso(caso_id: int, email: EmailStr = Query(...)):
     """
-    Devuelve el detalle de un caso concreto del mediador.
+    Devuelve el detalle de un caso, verificando que pertenece al mediador (email).
     """
-    ensure_pro_user(mediador)
+    email_norm = email.strip().lower()
+    try:
+        with pg_conn() as cx, cx.cursor() as cur:
+            _ensure_table(cur)
+            cur.execute(
+                """
+                SELECT id, mediador_email, titulo, descripcion, estado,
+                       fecha_inicio, fecha_cierre, created_at, updated_at
+                  FROM casos
+                 WHERE id = %s
+                   AND LOWER(mediador_email) = LOWER(%s);
+                """,
+                (caso_id, email_norm),
+            )
+            row = cur.fetchone()
+    except Exception as e:
+        raise HTTPException(500, f"Error obteniendo caso: {e}")
 
-    caso = (
-        db.query(Caso)
-        .filter(Caso.id == caso_id, Caso.mediador_id == mediador.id)
-        .first()
-    )
+    if not row:
+        raise HTTPException(404, "Caso no encontrado")
 
-    if not caso:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Caso no encontrado.",
-        )
-
-    return caso
+    return _row_to_dict(row)
 
 
-@casos_router.put("/casos/{caso_id}", response_model=CasoOut)
-def actualizar_caso(
-    caso_id: int,
-    payload: CasoUpdate,
-    db: Session = Depends(get_db),
-    mediador: MediadorIdentity = Depends(get_current_mediador),
-):
+@casos_router.put("/{caso_id}", response_model=CasoOut)
+def actualizar_caso(caso_id: int, body: CasoUpdate):
     """
     Actualiza un caso del mediador.
+    Se identifica por id + email propietario.
     """
-    ensure_pro_user(mediador)
+    email_norm = body.email.strip().lower()
 
-    caso = (
-        db.query(Caso)
-        .filter(Caso.id == caso_id, Caso.mediador_id == mediador.id)
-        .first()
-    )
+    # Primero cargamos el caso existente
+    try:
+        with pg_conn() as cx, cx.cursor() as cur:
+            _ensure_table(cur)
+            cur.execute(
+                """
+                SELECT id, mediador_email, titulo, descripcion, estado,
+                       fecha_inicio, fecha_cierre, created_at, updated_at
+                  FROM casos
+                 WHERE id = %s
+                   AND LOWER(mediador_email) = LOWER(%s);
+                """,
+                (caso_id, email_norm),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(404, "Caso no encontrado")
 
-    if not caso:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Caso no encontrado.",
-        )
+            current = _row_to_dict(row)
 
-    if payload.titulo is not None:
-        caso.titulo = payload.titulo.strip() or caso.titulo
+            new_titulo = (body.titulo or current["titulo"] or "").strip()
+            new_desc = body.descripcion if body.descripcion is not None else current["descripcion"]
+            new_estado = (body.estado or current["estado"] or "abierto").strip().lower()
+            if new_estado not in ("abierto", "en_curso", "cerrado"):
+                new_estado = current["estado"] or "abierto"
 
-    if payload.descripcion is not None:
-        caso.descripcion = payload.descripcion.strip() or None
+            fecha_cierre = current["fecha_cierre"]
+            if new_estado == "cerrado" and not fecha_cierre:
+                fecha_cierre = datetime.utcnow()
+            if new_estado in ("abierto", "en_curso") and fecha_cierre is not None:
+                fecha_cierre = None
 
-    if payload.estado is not None:
-        estado = payload.estado.lower()
-        caso.estado = estado
-        if estado == "cerrado" and not caso.fecha_cierre:
-            caso.fecha_cierre = datetime.utcnow()
-        if estado in ("abierto", "en_curso") and caso.fecha_cierre is not None:
-            caso.fecha_cierre = None
+            cur.execute(
+                """
+                UPDATE casos
+                   SET titulo = %s,
+                       descripcion = %s,
+                       estado = %s,
+                       fecha_cierre = %s,
+                       updated_at = NOW()
+                 WHERE id = %s
+                   AND LOWER(mediador_email) = LOWER(%s)
+                RETURNING id, mediador_email, titulo, descripcion, estado,
+                          fecha_inicio, fecha_cierre, created_at, updated_at;
+                """,
+                (
+                    new_titulo,
+                    new_desc,
+                    new_estado,
+                    fecha_cierre,
+                    caso_id,
+                    email_norm,
+                ),
+            )
+            updated = cur.fetchone()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"No se pudo actualizar el caso: {e}")
 
-    if payload.archivos is not None:
-        caso.archivos = [a.dict() for a in payload.archivos] or None
+    if not updated:
+        raise HTTPException(404, "Caso no encontrado tras actualizar")
 
-    caso.updated_at = datetime.utcnow()
-
-    db.add(caso)
-    db.commit()
-    db.refresh(caso)
-
-    return caso
+    return _row_to_dict(updated)
 
 
-@casos_router.delete("/casos/{caso_id}", status_code=status.HTTP_204_NO_CONTENT)
-def eliminar_caso(
-    caso_id: int,
-    db: Session = Depends(get_db),
-    mediador: MediadorIdentity = Depends(get_current_mediador),
-):
+@casos_router.delete("/{caso_id}")
+def eliminar_caso(caso_id: int, email: EmailStr = Query(...)):
     """
     Elimina un caso del mediador.
-    Si prefieres "soft delete", en lugar de borrar puedes:
-      - añadir campo 'archivado' o
-      - cambiar estado a 'cerrado'/'eliminado'.
-
-    Por simplicidad aquí BORRAMOS el registro.
+    Si prefieres 'soft delete' más adelante, se puede cambiar por estado = 'eliminado'.
     """
-    ensure_pro_user(mediador)
+    email_norm = email.strip().lower()
+    try:
+        with pg_conn() as cx, cx.cursor() as cur:
+            _ensure_table(cur)
+            cur.execute(
+                """
+                DELETE FROM casos
+                 WHERE id = %s
+                   AND LOWER(mediador_email) = LOWER(%s);
+                """,
+                (caso_id, email_norm),
+            )
+            n = cur.rowcount
+            cx.commit()
+    except Exception as e:
+        raise HTTPException(500, f"No se pudo eliminar el caso: {e}")
 
-    caso = (
-        db.query(Caso)
-        .filter(Caso.id == caso_id, Caso.mediador_id == mediador.id)
-        .first()
-    )
+    if n == 0:
+        raise HTTPException(404, "Caso no encontrado")
 
-    if not caso:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Caso no encontrado.",
-        )
-
-    db.delete(caso)
-    db.commit()
-    return None
+    return {"ok": True, "deleted": caso_id}

@@ -1,4 +1,4 @@
-# app.py — Mediazion Backend (estable y completo)
+# app_casos.py — app.py con CASOS integrado (versión plantilla para Mediazion)
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,7 +32,6 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 def health():
     return JSONResponse({"ok": True, "service": "mediazion-backend"})
 
-
 # -------------- IMPORT ROUTERS --------------
 from auth_routes import auth_router
 from ai_routes import ai_router
@@ -43,7 +42,6 @@ from voces_routes import voces_router
 from news_routes import news_router
 from perfil_routes import perfil_router
 from mediadores_register_routes import register_router
-
 
 # IA Legal unificada
 try:
@@ -69,13 +67,11 @@ try:
 except:
     migrate_router = None
 
-
 # Casos / expedientes
 try:
     from casos_routes import casos_router
 except:
     casos_router = None
-
 
 # -------------- REGISTER ROUTERS --------------
 app.include_router(auth_router,     prefix="/api", tags=["auth"])
@@ -88,12 +84,11 @@ app.include_router(voces_router,    prefix="/api", tags=["voces"])
 app.include_router(news_router,     prefix="/api", tags=["news"])
 app.include_router(register_router, prefix="/api", tags=["mediadores"])
 
-
 # IA Legal
 if ai_legal:
     app.include_router(ai_legal, prefix="/api", tags=["ai-legal"])
 
-# Stripe (¡ESTO ES LO QUE FALTABA!)
+# Stripe
 if stripe_router:
     app.include_router(stripe_router, prefix="/api", tags=["stripe"])
 
