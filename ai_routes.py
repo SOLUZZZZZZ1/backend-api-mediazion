@@ -1,4 +1,4 @@
-# ai_routes.py — IA institucional + asistente profesional + asistente con documento
+# ai_routes.py — IA institucional + asistente profesional + asistente con documento / imagen (Vision)
 import os
 from typing import Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Depends, Header
@@ -15,7 +15,7 @@ try:
 except Exception:
     _HAS_OPENAI = False
 
-# PDF y DOCX (asegúrate de tenerlos en requirements)
+# PDF y DOCX
 try:
     import pypdf
     _HAS_PYPDF = True
@@ -30,18 +30,19 @@ except Exception:
 
 ai_router = APIRouter()
 
-# -------------------- Seguridad básica para endpoints privados --------------------
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
+# -------------------- Seguridad básica --------------------
 def token_gate(authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
     """
     Gate mínimo: espera Authorization: Bearer <algo>.
-    Puedes sustituirlo por tu get_current_user real si lo importas del módulo de mediadores.
+    Aquí solo verificamos que exista y empiece por 'Bearer '.
     """
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "Missing token")
-    # Aquí solo validamos que exista un token; si quieres comprueba el token contra tu tabla "sessions".
     return {"ok": True}
 
-# -------------------- Utilidades OpenAI --------------------
+# -------------------- Cliente OpenAI --------------------
 def _client():
     if not _HAS_OPENAI:
         raise HTTPException(500, "OpenAI no disponible. Instala `openai`.")
@@ -51,7 +52,7 @@ def _client():
     return OpenAI(api_key=api_key)
 
 MODEL_GENERAL = os.getenv("OPENAI_MODEL_GENERAL", "gpt-4o-mini")
-MODEL_ASSIST  = os.getenv("OPENAI_MODEL_ASSIST",  "gpt-4o")
+MODEL_ASSIST  = os.getenv("OPENAI_MODEL_ASSIST",  "gpt-4o")  # usamos gpt-4o para texto + visión
 
 # -------------------- IA pública (institucional) --------------------
 class CompleteIn(BaseModel):
@@ -68,7 +69,7 @@ def ai_complete(body: CompleteIn):
                     "role": "system",
                     "content": (
                         "Eres el asistente institucional de MEDIAZION. "
-                        "Respondes claro, amable y sin pedir ni retener datos personales."
+                        "Respondes claro, breve y sin pedir ni retener datos personales."
                     ),
                 },
                 {"role": "user", "content": body.prompt},
@@ -103,11 +104,11 @@ def ai_assist(body: AssistIn, _=Depends(token_gate)):
     except Exception as ex:
         raise HTTPException(500, f"IA error: {ex}")
 
-# -------------------- IA con documento (TXT/MD/PDF/DOCX) --------------------
+# -------------------- IA con documento (TXT/MD/PDF/DOCX/IMAGEN) --------------------
 class AssistWithIn(BaseModel):
-    doc_url: str   # e.g. "/uploads/123/doc_1729960000.pdf" o "https://..."
+    doc_url: str   # e.g. "https://.../archivo.pdf" o "https://.../imagen.jpg"
     prompt: str
-    max_chars: Optional[int] = 120_000  # límite de texto para no desbordar al modelo
+    max_chars: Optional[int] = 120_000
 
 def _is_http(u: str) -> bool:
     return u.lower().startswith("http://") or u.lower().startswith("https://")
@@ -120,14 +121,15 @@ async def _download_http(url: str, max_bytes: int = 8 * 1024 * 1024) -> tuple[st
         content = r.content
         if len(content) > max_bytes:
             raise HTTPException(413, "Archivo demasiado grande (>8MB)")
-        # Intenta sugerir nombre desde cabeceras o URL
+        # Nombre sugerido desde cabeceras o URL
         filename = None
         cd = r.headers.get("content-disposition") or ""
         m = re.search(r'filename="?([^"]+)"?', cd, flags=re.IGNORECASE)
         if m:
             filename = m.group(1)
         if not filename:
-            filename = url.split("?")[0].rstrip("/").split("/")[-1] or "doc.bin"
+            path = r.url.path or ""
+            filename = path.split("/")[-1] or "doc.bin"
         return filename, content
 
 def _read_local(path: Path, max_bytes: int = 8 * 1024 * 1024) -> bytes:
@@ -162,9 +164,7 @@ def _extract_text_bytes(data: bytes, ext: str) -> str:
         try:
             bio = io.BytesIO(data)
             document = docx.Document(bio)
-            out = []
-            for p in document.paragraphs:
-                out.append(p.text)
+            out = [p.text for p in document.paragraphs]
             return "\n".join(out)
         except Exception as e:
             raise HTTPException(400, f"No se pudo extraer texto del DOCX: {e}")
@@ -174,44 +174,87 @@ def _extract_text_bytes(data: bytes, ext: str) -> str:
 @ai_router.post("/assist_with")
 async def ai_assist_with(body: AssistWithIn, _=Depends(token_gate)):
     """
-    Usa IA con un documento adjunto (subido o remoto) + prompt del usuario.
-    Lee: /uploads/{id}/{fname} o http(s)://...
-    Extrae texto (TXT/MD/PDF/DOCX), recorta y llama al modelo profesional.
+    Usa IA con un documento o imagen adjunto:
+    - Si es PDF/DOCX/TXT/MD → extrae texto y responde.
+    - Si es imagen (JPG/PNG/WEBP/GIF) → usa GPT-4o con visión sobre la URL.
     """
+    client = _client()
+
+    doc_url = (body.doc_url or "").strip()
+    if not doc_url:
+        raise HTTPException(400, "Falta la URL del documento")
+
+    # 1) Detectar extensión de forma rápida
+    ext = ""
+    if "." in doc_url:
+        ext = "." + doc_url.split("?")[0].split(".")[-1].lower()
+
+    # 2) IMAGEN → Vision (usamos directamente la URL pública, no hace falta leer bytes)
+    if ext in IMAGE_EXTS:
+        system = (
+            "Eres el asistente profesional de MEDIAZION. Vas a analizar una imagen "
+            "(por ejemplo un documento escaneado, una captura de pantalla, etc.) "
+            "junto con una instrucción. Describe el contenido relevante y responde "
+            "pensando en mediación (hechos, posiciones, posibles acuerdos)."
+        )
+        try:
+            resp = client.chat.completions.create(
+                model=MODEL_ASSIST,
+                messages=[
+                    {"role": "system", "content": system},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": body.prompt},
+                            {"type": "image_url", "image_url": {"url": doc_url}},
+                        ],
+                    },
+                ],
+            )
+            out = resp.choices[0].message.content
+            return {"ok": True, "text": out}
+        except Exception as ex:
+            raise HTTPException(500, f"IA (visión) error: {ex}")
+
+    # 3) DOCUMENTO TEXTO → PDF/DOCX/TXT/MD: descargamos y extraemos texto
     filename = "doc.bin"
     raw = b""
 
-    if _is_http(body.doc_url):
-        filename, raw = await _download_http(body.doc_url)
+    if _is_http(doc_url):
+        filename, raw = await _download_http(doc_url)
+        if "." in filename:
+            ext = "." + filename.split(".")[-1].lower()
+        else:
+            ext = ext or ".bin"
     else:
-        # doc_url local: normalmente empieza por /uploads/...
-        local = body.doc_url
+        # rutas locales (no recomendado en producción, pero lo mantenemos por compatibilidad)
+        local = doc_url
         if local.startswith("/"):
-            local = "." + local  # monta ruta relativa
+            local = "." + local
         path = Path(local).resolve()
-        # Seguridad mínima: solo leer dentro del directorio actual
+        # seguridad básica: sólo dentro de la carpeta actual
         if str(path).find(str(Path(".").resolve())) != 0:
             raise HTTPException(403, "Ruta no permitida")
         raw = _read_local(path)
-        filename = path.name
+        ext = path.suffix.lower()
 
-    ext = "." + filename.split(".")[-1].lower() if "." in filename else ".bin"
     text = _extract_text_bytes(raw, ext)
     if not text.strip():
         raise HTTPException(400, "El documento no tiene texto legible")
 
+    # recortar si es demasiado grande
     max_chars = body.max_chars or 120_000
     if len(text) > max_chars:
-        text = text[:max_chars] + "\n\n[...texto recortado por longitud...]"
+        text = text[:max_chars] + "\n\n[...texto recortado por longitud…]"
 
     system = (
-        "Eres el asistente profesional de MEDIAZION. Recibirás un documento textual y un encargo. "
-        "Responde con rigor, bien estructurado y orientado a mediación (actas, resúmenes, borradores de acuerdos, comunicaciones). "
-        "No inventes datos. Si algo no está en el documento, dilo claramente."
+        "Eres el asistente profesional de MEDIAZION. Recibirás el contenido de un documento "
+        "junto con una instrucción. Responde con rigor, bien estructurado y orientado a "
+        "mediación (actas, resúmenes, borradores de acuerdos, comunicaciones). "
+        "No inventes datos; si algo no está en el documento, dilo claramente."
     )
-    user_message = f"{body.prompt}\n\n=== DOCUMENTO INTEGRAL ===\n{text}"
+    user_message = f"{body.prompt}\n\n=== DOCUMENTO COMPLETO ===\n{text}"
 
-    client = _client()
     try:
         resp = client.chat.completions.create(
             model=MODEL_ASSIST,
