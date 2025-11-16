@@ -1,4 +1,4 @@
-# ai_legal_routes.py — IA Legal unificada (chat jurídico + buscador jurídico)
+# ai_legal_routes.py — IA Legal unificada (CHAT + BUSCADOR) con normalización OpenAI
 from fastapi import APIRouter, HTTPException, Query, Header
 from pydantic import BaseModel
 import feedparser
@@ -13,40 +13,39 @@ except Exception:
 
 ai_legal = APIRouter(prefix="/ai/legal", tags=["ai-legal"])
 
-# -----------------------------
-#   NORMALIZADOR DE MENSAJES
-# -----------------------------
+# --------------------------------------
+# NORMALIZAR RESPUESTA DEL MODELO
+# --------------------------------------
 def normalize_openai_content(content):
     """
-    Convierte message.content del SDK 1.37+ en texto plano.
-    - Puede ser string
-    - Puede ser lista de objetos con {type, text}
+    Convierte message.content del SDK nuevo (lista de bloques)
+    en un string limpio para devolver al frontend.
     """
+    # Caso antiguo: string directo
     if isinstance(content, str):
-        return content
+        return content.strip()
 
-    out = []
+    result = []
+
     if isinstance(content, list):
         for part in content:
+            # Ejemplo de part:
+            # {"type":"text","text":{"value":"hola"}, ...}
             try:
-                if isinstance(part, dict):
-                    # text simple
-                    if "text" in part and isinstance(part["text"], str):
-                        out.append(part["text"])
-                    # text.value (cuando viene en subobjeto)
-                    elif "text" in part and isinstance(part["text"], dict) and "value" in part["text"]:
-                        out.append(part["text"]["value"])
-                # fallback
-                else:
-                    out.append(str(part))
+                if part.get("type") == "text":
+                    txt = part.get("text")
+                    if isinstance(txt, str):
+                        result.append(txt)
+                    elif isinstance(txt, dict) and "value" in txt:
+                        result.append(txt["value"])
             except:
                 pass
 
-    return "\n".join(out).strip() if out else ""
+    return "\n".join(result).strip()
 
-# -----------------------------
-#   CHAT JURÍDICO
-# -----------------------------
+# --------------------------------------
+# CHAT LEGAL
+# --------------------------------------
 class LegalChatIn(BaseModel):
     prompt: str
 
@@ -56,66 +55,72 @@ def legal_chat(body: LegalChatIn, authorization: str = Header(None)):
         raise HTTPException(401, "Falta Authorization")
 
     if not HAS_OPENAI:
-        raise HTTPException(500, "OpenAI no está disponible")
+        raise HTTPException(500, "OpenAI no disponible")
 
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-    system_msg = (
+    system = (
         "Eres una IA experta jurídica en mediación en España. "
-        "Respondes de forma clara, prudente y bien estructurada. "
-        "No sustituyes asesoramiento legal personal. "
-        "Citas normativa solo si aplica, pero sin inventar nada."
+        "Respondes de forma clara, estructurada y prudente. "
+        "No inventes normativa y no sustituyes asesoramiento profesional."
     )
 
     try:
         resp = client.chat.completions.create(
             model=os.getenv("OPENAI_MODEL_LEGAL", "gpt-4o-mini"),
             messages=[
-                {"role": "system", "content": system_msg},
+                {"role": "system", "content": system},
                 {"role": "user", "content": body.prompt},
             ],
         )
+
         raw = resp.choices[0].message.content
         text = normalize_openai_content(raw)
+
         return {"ok": True, "text": text}
+
     except Exception as e:
         raise HTTPException(500, f"Error IA Legal: {e}")
 
-# -----------------------------
-#   BUSCADOR JURÍDICO
-# -----------------------------
+# --------------------------------------
+# BUSCADOR LEGAL (BOE, Confilegal, LegalToday, CGPJ)
+# --------------------------------------
 SOURCES = {
     "BOE": "https://www.boe.es/rss/boe_es.xml",
     "CONFILEGAL": "https://confilegal.com/feed/",
-    "LEGALTODAY": "https://www.legaltoday.com/feed/",
     "CGPJ": "https://www.poderjudicial.es/cgpj/es/Servicios/rss/Noticias.xml",
+    "LEGALTODAY": "https://www.legaltoday.com/feed/",
 }
 
 @ai_legal.get("/search")
 def legal_search(q: str = Query(..., min_length=2)):
-    try:
-        term = q.lower().strip()
-        items = []
+    term = q.lower().strip()
+    items = []
 
+    try:
         for name, url in SOURCES.items():
             feed = feedparser.parse(url)
 
-            for e in feed.entries[:25]:
+            for e in feed.entries[:30]:
                 title = e.get("title", "") or ""
                 summary = e.get("summary", "") or e.get("description", "") or ""
                 link = e.get("link", "") or ""
                 date = e.get("published", "") or e.get("updated", "")
 
                 blob = (title + " " + summary).lower()
+
                 if term in blob:
-                    items.append({
-                        "title": title,
-                        "summary": summary,
-                        "url": link,
-                        "date": date,
-                        "source": name,
-                    })
+                    items.append(
+                        {
+                            "title": title.strip(),
+                            "summary": summary.strip(),
+                            "source": name,
+                            "url": link,
+                            "date": date,
+                        }
+                    )
 
         return {"ok": True, "items": items}
+
     except Exception as e:
         raise HTTPException(500, f"Error en búsqueda legal: {e}")
