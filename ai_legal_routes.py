@@ -32,16 +32,17 @@ def normalize_openai_content(content):
             # Ejemplo de part:
             # {"type":"text","text":{"value":"hola"}, ...}
             try:
-                if part.get("type") == "text":
-                    txt = part.get("text")
-                    if isinstance(txt, str):
-                        result.append(txt)
-                    elif isinstance(txt, dict) and "value" in txt:
-                        result.append(txt["value"])
+                if isinstance(part, dict):
+                    if part.get("type") == "text":
+                        txt = part.get("text")
+                        if isinstance(txt, str):
+                            result.append(txt)
+                        elif isinstance(txt, dict) and "value" in txt:
+                            result.append(txt["value"])
             except:
                 pass
 
-    return "\n".join(result).strip()
+    return "\n".join(result).strip() if result else ""
 
 # --------------------------------------
 # CHAT LEGAL
@@ -57,12 +58,16 @@ def legal_chat(body: LegalChatIn, authorization: str = Header(None)):
     if not HAS_OPENAI:
         raise HTTPException(500, "OpenAI no disponible")
 
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(503, "Falta OPENAI_API_KEY")
+
+    client = OpenAI(api_key=api_key)
 
     system = (
         "Eres una IA experta jurídica en mediación en España. "
         "Respondes de forma clara, estructurada y prudente. "
-        "No inventes normativa y no sustituyes asesoramiento profesional."
+        "No inventes normativa ni hechos. No sustituyes asesoramiento de un abogado presencial."
     )
 
     try:
