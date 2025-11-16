@@ -1,124 +1,252 @@
-# voces_routes.py — creación y listado de artículos (Voces)
-from fastapi import APIRouter, HTTPException
+
+# voces_routes.py — Gestión unificada de VOCES para Mediazion
+# -----------------------------------------------------------
+# Backend REAL: PostgreSQL directo con pg_conn() (sin ORM).
+# Compatible con:
+#   - VocesNuevo.jsx  (crear + publicar)
+#   - VocesPublic.jsx (listar publicados)
+#   - VocesDetalle.jsx (detalle + comentarios)
+#
+# NOTA: La tabla "posts" + "post_comments" ya se crea desde /admin/migrate/voces/init
+
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, EmailStr
 from db import pg_conn
 from datetime import datetime
 import re
 
-voces_router = APIRouter()
+voces_router = APIRouter(prefix="/voces", tags=["voces"])
 
-# ---------- MODELO ----------
-class VozIn(BaseModel):
+
+# ---------------- Helpers -----------------
+
+def _slugify(title: str) -> str:
+    """Genera un slug único basado en el título."""
+    base = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    if not base:
+        base = "post"
+    ts = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    return f"{base}-{ts}"
+
+
+def _row_dict(row, cols):
+    """Convierte una row (tuple o dict) a dict estándar."""
+    if isinstance(row, dict):
+        return row
+    return {col: row[i] for i, col in enumerate(cols)}
+
+
+# ---------------- Modelos -----------------
+
+class VozCreate(BaseModel):
     email: EmailStr
     title: str
-    summary: str
+    summary: str | None = None
     content: str
-    accept_terms: bool = False
 
-# ---------- SLUG ----------
-def slugify(text: str) -> str:
-    s = re.sub(r"[^a-zA-Z0-9\-\s]", "", text)
-    s = re.sub(r"\s+", "-", s.strip().lower())
-    return s or "publicacion"
 
-# ---------- CREAR PUBLICACIÓN ----------
-@voces_router.post("/voces/post")
-def crear_post(body: VozIn):
-    if not body.accept_terms:
-        raise HTTPException(400, "Debes aceptar las condiciones de publicación.")
+class CommentIn(BaseModel):
+    email: EmailStr
+    slug: str
+    content: str
 
-    slug = slugify(body.title)
+
+# ---------------- ENDPOINTS -----------------
+
+@voces_router.post("")
+def crear_borrador(body: VozCreate):
+    """Paso 1: crear borrador (status='draft')."""
+    email = body.email.strip().lower()
+    title = body.title.strip()
+    content = body.content.strip()
+
+    if not email or not title or not content:
+        raise HTTPException(400, "Falta email, título o contenido.")
+
+    slug = _slugify(title)
+
+    SQL = """
+        INSERT INTO posts (author_email, title, slug, summary, content, status, created_at)
+        VALUES (LOWER(%s), %s, %s, %s, %s, 'draft', NOW())
+        RETURNING id, slug;
+    """
 
     try:
         with pg_conn() as cx, cx.cursor() as cur:
-
-            # aseguramos slug único
-            cur.execute("SELECT id FROM posts WHERE slug=%s", (slug,))
-            if cur.fetchone():
-                slug = f"{slug}-{int(datetime.utcnow().timestamp())}"
-
-            cur.execute(
-                """
-                INSERT INTO posts (author_email,title,slug,summary,content,status,created_at,published_at)
-                VALUES (%s,%s,%s,%s,%s,'published',NOW(),NOW())
-                RETURNING id
-                """,
-                (body.email.lower(), body.title, slug, body.summary, body.content)
-            )
-            pid = cur.fetchone()[0]
+            cur.execute(SQL, (email, title, slug, body.summary, content))
+            row = cur.fetchone()
             cx.commit()
-
-        return {"ok": True, "id": pid, "slug": slug}
-
     except Exception as e:
-        raise HTTPException(500, f"Error creando post: {e}")
+        raise HTTPException(500, f"No se pudo crear el borrador: {e}")
 
-# ---------- LISTADO PÚBLICO ----------
-@voces_router.get("/voces/public")
-def listar_public():
+    return {"ok": True, "id": row[0], "slug": row[1]}
+
+
+@voces_router.post("/{post_id}/publish")
+def publicar_post(post_id: int, email: EmailStr = Query(...)):
+    """Paso 2: publicar (status='published')."""
+    email_norm = email.lower()
+
     try:
         with pg_conn() as cx, cx.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, title, slug, summary, author_email,
-                       to_char(published_at,'YYYY-MM-DD')
-                FROM posts
-                WHERE status='published'
-                ORDER BY published_at DESC
-                LIMIT 50
-                """
-            )
-            rows = cur.fetchall()
+            # verificar autor
+            cur.execute("SELECT id, slug, author_email FROM posts WHERE id=%s;", (post_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(404, "Post no encontrado.")
 
-        items = [
-            {
-                "id": r[0],
-                "title": r[1],
-                "slug": r[2],
-                "summary": r[3],
-                "author_email": r[4],
-                "published_at": r[5],
-            }
-            for r in rows
-        ]
-        return {"ok": True, "items": items}
+            pid, slug, author = row
+            if author.lower() != email_norm:
+                raise HTTPException(403, "No puedes publicar un post de otro usuario.")
 
-    except Exception as e:
-        raise HTTPException(500, f"Error listando publicaciones: {e}")
-
-# ---------- DETALLE ----------
-@voces_router.get("/voces/{slug}")
-def detalle_publicacion(slug: str):
-    try:
-        with pg_conn() as cx, cx.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id,title,slug,summary,content,author_email,
-                       to_char(published_at,'YYYY-MM-DD')
-                FROM posts
-                WHERE slug=%s AND status='published'
-                LIMIT 1
-                """,
-                (slug,)
-            )
-            r = cur.fetchone()
-            if not r:
-                raise HTTPException(404, "Publicación no encontrada")
-
-        return {
-            "ok": True,
-            "post": {
-                "id": r[0],
-                "title": r[1],
-                "slug": r[2],
-                "summary": r[3],
-                "content": r[4],
-                "author_email": r[5],
-                "published_at": r[6],
-            },
-        }
+            # publicar
+            cur.execute("""
+                UPDATE posts
+                   SET status='published',
+                       published_at=NOW()
+                 WHERE id=%s;
+            """, (pid,))
+            cx.commit()
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Error obteniendo el artículo: {e}")
+        raise HTTPException(500, f"Error publicando: {e}")
+
+    return {"ok": True, "id": post_id, "slug": slug}
+
+
+@voces_router.get("/public")
+def listar_public(limit: int = 20):
+    """Listado público de artículos."""
+    COLS = ["id", "author_email", "title", "slug", "summary", "published_at"]
+
+    try:
+        with pg_conn() as cx, cx.cursor() as cur:
+            cur.execute("""
+                SELECT id, author_email, title, slug, summary, published_at
+                  FROM posts
+                 WHERE status='published'
+                 ORDER BY published_at DESC NULLS LAST
+                 LIMIT %s;
+            """, (limit,))
+            rows = cur.fetchall() or []
+    except Exception as e:
+        raise HTTPException(500, f"Error listando publicaciones: {e}")
+
+    items = []
+    for r in rows:
+        d = _row_dict(r, COLS)
+        if d["published_at"]:
+            d["published_at"] = d["published_at"].isoformat()
+        items.append(d)
+
+    return {"ok": True, "items": items}
+
+
+@voces_router.get("/{slug}")
+def detalle_publicacion(slug: str):
+    """Detalle de un post (público)."""
+    COLS = ["id", "author_email", "title", "slug", "summary", "content",
+            "status", "created_at", "published_at"]
+
+    try:
+        with pg_conn() as cx, cx.cursor() as cur:
+            cur.execute("""
+                SELECT id, author_email, title, slug, summary, content,
+                       status, created_at, published_at
+                  FROM posts
+                 WHERE slug=%s;
+            """, (slug,))
+            row = cur.fetchone()
+    except Exception as e:
+        raise HTTPException(500, f"Error cargando post: {e}")
+
+    if not row:
+        raise HTTPException(404, "Artículo no encontrado.")
+
+    d = _row_dict(row, COLS)
+    if d["published_at"]:
+        d["published_at"] = d["published_at"].isoformat()
+
+    return {"ok": True, "post": d}
+
+
+@voces_router.get("/{slug}/comments")
+def listar_comentarios(slug: str):
+    """Comentarios del artículo."""
+    COLS = ["id", "author_email", "content", "created_at"]
+
+    try:
+        with pg_conn() as cx, cx.cursor() as cur:
+            # obtener id del post
+            cur.execute("SELECT id FROM posts WHERE slug=%s;", (slug,))
+            p = cur.fetchone()
+            if not p:
+                return {"items": []}
+
+            post_id = p[0]
+
+            cur.execute("""
+                SELECT id, author_email, content, created_at
+                  FROM post_comments
+                 WHERE post_id=%s
+                 ORDER BY created_at ASC;
+            """, (post_id,))
+            rows = cur.fetchall() or []
+
+    except Exception as e:
+        raise HTTPException(500, f"Error listando comentarios: {e}")
+
+    items = []
+    for r in rows:
+        d = _row_dict(r, COLS)
+        if d["created_at"]:
+            d["created_at"] = d["created_at"].isoformat()
+        items.append(d)
+
+    return {"items": items}
+
+
+@voces_router.post("/comment")
+def crear_comentario(body: CommentIn):
+    """Crear comentario en un post existente."""
+    email = body.email.lower()
+    content = body.content.strip()
+
+    if not email or not content:
+        raise HTTPException(400, "Faltan datos.")
+
+    # obtener post_id por slug
+    try:
+        with pg_conn() as cx, cx.cursor() as cur:
+            cur.execute("SELECT id FROM posts WHERE slug=%s;", (body.slug,))
+            p = cur.fetchone()
+            if not p:
+                raise HTTPException(404, "Post no encontrado.")
+
+            post_id = p[0]
+
+            cur.execute("""
+                INSERT INTO post_comments (post_id, author_email, content, created_at)
+                VALUES (%s, %s, %s, NOW())
+                RETURNING id, author_email, content, created_at;
+            """, (post_id, email, content))
+
+            row = cur.fetchone()
+            cx.commit()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Error creando comentario: {e}")
+
+    return {
+        "ok": True,
+        "comment": {
+            "id": row[0],
+            "author_email": row[1],
+            "content": row[2],
+            "created_at": row[3].isoformat() if row[3] else None,
+        },
+    }
