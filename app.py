@@ -70,6 +70,13 @@ except:
     migrate_router = None
 
 
+# Casos / expedientes
+try:
+    from casos_routes import casos_router
+except:
+    casos_router = None
+
+
 # -------------- REGISTER ROUTERS --------------
 app.include_router(auth_router,     prefix="/api", tags=["auth"])
 app.include_router(ai_router,       prefix="/api/ai", tags=["ai"])
@@ -97,3 +104,7 @@ if mediadores_router:
 # Migraciones
 if migrate_router:
     app.include_router(migrate_router, prefix="/api/admin", tags=["admin"])
+
+# Casos
+if casos_router:
+    app.include_router(casos_router, prefix="/api", tags=["casos"])
