@@ -1,28 +1,7 @@
 # voces_routes.py — Gestión de VOCES con moderación IA (Mediazion)
 # ---------------------------------------------------------------
 # Backend: FastAPI + PostgreSQL directo usando db.pg_conn (sin ORM).
-#
-# Tablas (creadas por migrate_routes.voces_init):
-#   posts (id, author_email, title, slug, summary, content, status, created_at, published_at)
-#   post_comments (id, post_id, author_email, content, created_at)
-#
-# Estados (status):
-#   - 'draft'          → borrador (si en futuro lo usas)
-#   - 'pending_ai'     → creado, pendiente de moderación IA
-#   - 'pending_review' → IA recomienda revisión manual
-#   - 'rejected'       → IA rechaza
-#   - 'published'      → publicado (aparece en Voces públicas)
-#
-# ENDPOINTS:
-#   POST   /api/voces                → crear post + moderar con IA
-#   POST   /api/voces/{id}/publish   → publicar manualmente (autor) si no está rejected
-#   POST   /api/voces/post           → LEGACY: crear + publicar directo (para VocesEditor antiguo)
-#   GET    /api/voces/public         → listado público (status='published')
-#   GET    /api/voces/{slug}         → detalle de un post
-#   GET    /api/voces/{slug}/comments → comentarios del post
-#   POST   /api/voces/comment        → crear comentario
-#   DELETE /api/voces/{id}?email=... → borrar artículo (solo autor)
-#
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, EmailStr
 from db import pg_conn
@@ -138,7 +117,7 @@ class CommentIn(BaseModel):
     content: str
 
 
-# ---------------- Crear + moderar (VocesNuevo.jsx) ----------------
+# ---------------- Crear + moderar (VocesNuevo.jsx y VocesEditor via delegación) ----------------
 
 @voces_router.post("")
 def crear_con_moderacion(body: VozCreate):
@@ -232,54 +211,30 @@ def crear_con_moderacion(body: VozCreate):
     }
 
 
-# ---------------- LEGACY: /voces/post (VocesEditor antiguo) ----------------
+# ---------------- LEGACY: /voces/post (VocesEditor.jsx) → ahora también moderado ----------------
 
 @voces_router.post("/post")
 def crear_post_directo(body: VozLegacy):
     """
-    Endpoint LEGACY usado por VocesEditor.jsx:
+    Endpoint usado por VocesEditor.jsx:
     POST /api/voces/post
 
-    - Requiere accept_terms=True
-    - Crea y PUBLICA el post directamente (status='published').
-      (Esta ruta NO aplica moderación IA dura, para no romper tu flujo viejo).
+    Ahora delega en crear_con_moderacion para usar también la IA.
     """
     if not body.accept_terms:
         raise HTTPException(400, "Debes aceptar las condiciones de publicación.")
 
-    email = body.email.strip().lower()
-    title = body.title.strip()
-    content = body.content.strip()
-    summary = (body.summary or "").strip() or None
-
-    if not email or not title or not content:
-        raise HTTPException(400, "Falta email, título o contenido.")
-
-    slug = _slugify(title)
-
-    try:
-        with pg_conn() as cx, cx.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO posts (author_email, title, slug, summary, content, status, created_at, published_at)
-                VALUES (LOWER(%s), %s, %s, %s, %s, 'published', NOW(), NOW())
-                RETURNING id, slug;
-                """,
-                (email, title, slug, summary, content),
-            )
-            row = cur.fetchone()
-            if not row:
-                raise HTTPException(500, "No se pudo recuperar el post creado.")
-            cx.commit()
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"No se pudo publicar: {e}")
-
-    return {"ok": True, "id": row[0], "slug": row[1]}
+    # Reutilizamos la lógica de creación + moderación
+    voz = VozCreate(
+        email=body.email,
+        title=body.title,
+        summary=body.summary,
+        content=body.content,
+    )
+    return crear_con_moderacion(voz)
 
 
-# ---------------- Publicar manual (segundo paso) ----------------
+# ---------------- Publicar manual (VocesNuevo.jsx, segundo paso) ----------------
 
 @voces_router.post("/{post_id}/publish")
 def publicar_manual(post_id: int, email: EmailStr = Query(...)):
