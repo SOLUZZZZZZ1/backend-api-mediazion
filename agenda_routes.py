@@ -32,7 +32,6 @@ class AgendaUpdate(BaseModel):
 
 # ----------------- ENDPOINTS -----------------
 
-
 @agenda_router.get("")
 def listar_agenda(email: EmailStr = Query(...)):
     """
