@@ -42,6 +42,7 @@ from voces_routes import voces_router
 from news_routes import news_router
 from perfil_routes import perfil_router
 from mediadores_register_routes import register_router
+from agenda_routes import agenda_router
 
 # IA Legal unificada
 try:
@@ -83,6 +84,7 @@ app.include_router(perfil_router,   prefix="/api", tags=["perfil"])
 app.include_router(voces_router,    prefix="/api", tags=["voces"])
 app.include_router(news_router,     prefix="/api", tags=["news"])
 app.include_router(register_router, prefix="/api", tags=["mediadores"])
+app.include_router(agenda_router, prefix="/api", tags=["agenda"])
 
 # IA Legal
 if ai_legal:
