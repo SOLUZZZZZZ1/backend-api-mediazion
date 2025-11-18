@@ -11,13 +11,14 @@ mediadores_router = APIRouter()
 @mediadores_router.get("/mediadores/status")
 def mediador_status(email: EmailStr):
     """
-    Devuelve el estado PRO/BÁSICO del mediador (panel).
+    Devuelve el estado PRO/BÁSICO del mediador (panel),
+    e información sobre el trial (trial_end, trial_used).
     """
     try:
         with pg_conn() as cx, cx.cursor() as cur:
             cur.execute(
                 """
-                SELECT subscription_status, status
+                SELECT subscription_status, status, trial_end, trial_used
                   FROM mediadores
                  WHERE LOWER(email)=LOWER(%s)
                 """,
@@ -26,14 +27,23 @@ def mediador_status(email: EmailStr):
             row = cur.fetchone()
 
         if not row:
-            return {"email": email, "subscription_status": "none", "status": "missing"}
+            # Usuario aún no tiene fila en mediadores
+            return {
+                "email": email,
+                "subscription_status": "none",
+                "status": "missing",
+                "trial_end": None,
+                "trial_used": False,
+            }
 
-        subscription_status, status = row
+        subscription_status, status, trial_end, trial_used = row
 
         return {
             "email": email,
             "subscription_status": subscription_status or "none",
             "status": status or "active",
+            "trial_end": trial_end.isoformat() if trial_end else None,
+            "trial_used": bool(trial_used),
         }
 
     except Exception as e:
