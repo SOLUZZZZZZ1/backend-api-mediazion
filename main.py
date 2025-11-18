@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings, get_allowed_origins
 
 from .payments import router as payments_router
+from .mediadores_password_routes import router as mediadores_password_router
 
 app = FastAPI(title="MEDIAZION Backend", version="1.0.0")
 
@@ -21,3 +22,6 @@ def health():
 
 # Payments (Stripe)
 app.include_router(payments_router)
+
+# Cambio de contraseña de mediadores
+app.include_router(mediadores_password_router)
