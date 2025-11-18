@@ -42,6 +42,7 @@ from voces_routes import voces_router
 from news_routes import news_router
 from perfil_routes import perfil_router
 from mediadores_register_routes import register_router
+from mediadores_password_routes import router as mediadores_password_router
 from agenda_routes import agenda_router
 
 # IA Legal unificada
@@ -97,6 +98,10 @@ if stripe_router:
 # Mediadores
 if mediadores_router:
     app.include_router(mediadores_router, prefix="/api", tags=["mediadores"])
+# Cambio de contraseña de mediadores
+if mediadores_password_router:
+    app.include_router(mediadores_password_router, prefix="/api", tags=["mediadores-password"])
+
 
 # Migraciones
 if migrate_router:
