@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 ADMIN_EMAIL = "admin@mediazion.eu"
-ADMIN_PASSWORD = "1234"  # luego lo movemos a variable de Render
+ADMIN_PASSWORD = "8354Law8354Law1"  # luego lo movemos a variable de Render
 
 router = APIRouter()
 
