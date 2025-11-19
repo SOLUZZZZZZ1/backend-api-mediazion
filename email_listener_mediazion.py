@@ -48,7 +48,7 @@ IMAP_SSL = str(os.getenv("IMAP_SSL", "true")).strip().lower() in ("1", "true", "
 IMAP_FOLDER = os.getenv("IMAP_FOLDER", "INBOX")
 CHECK_INTERVAL = int(os.getenv("IMAP_CHECK_INTERVAL", "60"))  # segundos
 
-MIN_CONFIDENCE = float(os.getenv("EMAIL_MIN_CONFIDENCE", "0.75"))
+MIN_CONFIDENCE = 0.75
 PRIORITY_SUBJECT_PREFIX = os.getenv("EMAIL_PRIORITY_SUBJECT", "⚠️ [ALTA PRIORIDAD] ")
 
 
