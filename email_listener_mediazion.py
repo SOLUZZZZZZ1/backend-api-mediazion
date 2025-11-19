@@ -21,7 +21,7 @@ IMAP_PASS              -> contraseña del buzón
 IMAP_SSL               -> "true"/"false"  (por defecto true)
 IMAP_FOLDER            -> INBOX (por defecto)
 IMAP_CHECK_INTERVAL    -> en segundos (por defecto 60)
-EMAIL_MIN_CONFIDENCE   -> umbral de confianza para alta prioridad (por defecto 0.75)
+EMAIL_MIN_CONFIDENCE   -> umbral de confianza para alta prioridad (por defecto 0.75
 EMAIL_PRIORITY_SUBJECT -> si no está vacío, añade un prefijo al asunto en alta prioridad
 
 IMPORTANTE:
