@@ -1,8 +1,7 @@
 """
-Mediazion · Email Listener IMAP
---------------------------------
-Lee el buzón info@ (Nominalia) por IMAP, clasifica los correos con la
-misma lógica que el formulario /contact y envía respuesta automática.
+Mediazion · Email Listener IMAP (versión simplificada y estable)
+Lee el buzón info@ (Nominalia) por IMAP, clasifica el mensaje con la
+misma lógica que /contact y envía una auto-respuesta.
 
 Se apoya en:
 - ContactIn
@@ -11,22 +10,6 @@ Se apoya en:
 - _send_mail
 
 del módulo contact_routes.py
-
-Config por variables de entorno (Render):
-
-IMAP_HOST              -> p.ej. imap.securemail.pro
-IMAP_PORT              -> normalmente 993
-IMAP_USER              -> info@mediazion.eu
-IMAP_PASS              -> contraseña del buzón
-IMAP_SSL               -> "true"/"false"  (por defecto true)
-IMAP_FOLDER            -> INBOX (por defecto)
-IMAP_CHECK_INTERVAL    -> en segundos (por defecto 60)
-EMAIL_MIN_CONFIDENCE   0.75
-EMAIL_PRIORITY_SUBJECT -> si no está vacío, añade un prefijo al asunto en alta prioridad
-
-IMPORTANTE:
-- Ejecutar esto como un "Worker" en Render, no como web.
-- Comando sugerido: python email_listener_mediazion.py
 """
 
 import os
@@ -40,6 +23,7 @@ from email.message import Message
 from contact_routes import ContactIn, classify_contact, build_auto_reply, _send_mail
 
 
+# Config IMAP desde entorno (Render)
 IMAP_HOST = os.getenv("IMAP_HOST", "")
 IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
 IMAP_USER = os.getenv("IMAP_USER", "")
@@ -48,7 +32,10 @@ IMAP_SSL = str(os.getenv("IMAP_SSL", "true")).strip().lower() in ("1", "true", "
 IMAP_FOLDER = os.getenv("IMAP_FOLDER", "INBOX")
 CHECK_INTERVAL = int(os.getenv("IMAP_CHECK_INTERVAL", "60"))  # segundos
 
+# Umbral fijo para considerar alta prioridad
 MIN_CONFIDENCE = 0.75
+
+# Prefijo opcional para el asunto en alta prioridad
 PRIORITY_SUBJECT_PREFIX = os.getenv("EMAIL_PRIORITY_SUBJECT", "⚠️ [ALTA PRIORIDAD] ")
 
 
@@ -74,7 +61,8 @@ def _get_body_from_message(msg: Message) -> str:
             if ctype == "text/plain" and "attachment" not in disp:
                 try:
                     return part.get_payload(decode=True).decode(
-                        part.get_content_charset() or "utf-8", errors="ignore"
+                        part.get_content_charset() or "utf-8",
+                        errors="ignore",
                     )
                 except Exception:
                     continue
@@ -85,7 +73,8 @@ def _get_body_from_message(msg: Message) -> str:
             if ctype == "text/html" and "attachment" not in disp:
                 try:
                     html = part.get_payload(decode=True).decode(
-                        part.get_content_charset() or "utf-8", errors="ignore"
+                        part.get_content_charset() or "utf-8",
+                        errors="ignore",
                     )
                     # Conversión sencilla de <br> a saltos de línea
                     return (
@@ -98,17 +87,21 @@ def _get_body_from_message(msg: Message) -> str:
     else:
         if msg.get_content_type() == "text/plain":
             return msg.get_payload(decode=True).decode(
-                msg.get_content_charset() or "utf-8", errors="ignore"
+                msg.get_content_charset() or "utf-8",
+                errors="ignore",
             )
     return ""
 
 
-def process_unseen_messages():
+def process_unseen_messages() -> None:
     if not (IMAP_HOST and IMAP_USER and IMAP_PASS):
         print("[EmailListener] IMAP no configurado (IMAP_HOST/USER/PASS). Saliendo.")
         return
 
-    print(f"[EmailListener] Conectando a IMAP {IMAP_HOST}:{IMAP_PORT} (SSL={IMAP_SSL})…")
+    print(
+        f"[EmailListener] Conectando a IMAP {IMAP_HOST}:{IMAP_PORT} (SSL={IMAP_SSL})…"
+    )
+
     if IMAP_SSL:
         imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
     else:
@@ -183,7 +176,6 @@ def process_unseen_messages():
 
             reply_subject = subject
             if is_high_priority and PRIORITY_SUBJECT_PREFIX:
-                # No duplicar prefijo si ya lo tiene
                 if not subject.startswith(PRIORITY_SUBJECT_PREFIX):
                     reply_subject = f"{PRIORITY_SUBJECT_PREFIX}{subject}"
 
@@ -207,14 +199,13 @@ def process_unseen_messages():
 
         except Exception as e:
             print(f"[EmailListener] Error procesando mensaje {num!r}: {e}")
-            # también lo marcamos como visto para evitar bucle de errores
             imap.store(num, "+FLAGS", "\\Seen")
 
     imap.logout()
     print("[EmailListener] Ciclo completado.")
 
 
-def main_loop():
+def main_loop() -> None:
     print("[EmailListener] Iniciando bucle de escucha IMAP…")
     while True:
         try:
