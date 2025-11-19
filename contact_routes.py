@@ -3,6 +3,7 @@ from email.mime.text import MIMEText
 from email.utils import formataddr
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, EmailStr
+from typing import Literal
 
 # --- Soporte opcional para settings (config.py) ---
 try:
@@ -83,20 +84,121 @@ def _send_mail(to_email: str, subject: str, html: str, to_name: str = ""):
             server.login(SMTP_USER, SMTP_PASS)
             server.sendmail(MAIL_FROM, rcpt, msg.as_string())
 
+
+# --------- CLASIFICACIÓN BÁSICA (versión 1) ---------
+ContactType = Literal["mediador", "cliente", "otro"]
+
+def classify_contact(body: ContactIn) -> tuple[ContactType, float]:
+    """
+    Versión 1: clasificación sencilla por palabras clave.
+    Más adelante se puede sustituir por IA OpenAI sin tocar el resto.
+    """
+    text = f"{body.subject} {body.message}".lower()
+
+    score_mediador = 0
+    score_cliente = 0
+
+    # Indicadores de mediador
+    for kw in ["mediador", "mediación", "panel", "alta", "suscripción", "pro", "herramientas", "ia"]:
+        if kw in text:
+            score_mediador += 1
+
+    # Indicadores de cliente
+    for kw in ["conflicto", "problema", "disputa", "mi pareja", "mi ex", "vecino", "empresa", "trabajo", "laboral"]:
+        if kw in text:
+            score_cliente += 1
+
+    # Si no hay casi contexto, lo marcamos como "otro"
+    if score_mediador == 0 and score_cliente == 0:
+        return "otro", 0.4
+
+    if score_mediador > score_cliente:
+        return "mediador", 0.7 + 0.05 * score_mediador
+    if score_cliente > score_mediador:
+        return "cliente", 0.7 + 0.05 * score_cliente
+
+    # Empate raro → lo dejamos como "otro"
+    return "otro", 0.5
+
+
+def build_auto_reply(body: ContactIn, kind: ContactType) -> str:
+    name = body.name.strip() or "Hola"
+
+    if kind == "mediador":
+        return f"""Hola {name},
+
+¡Gracias por tu mensaje y por tu interés en Mediazion! 😊
+
+Mediazion es un panel profesional para mediadores que incluye:
+
+· IA Profesional (con visión para leer documentos e imágenes)
+· IA Legal
+· Generación de actas
+· Gestión de casos y agenda
+· Recursos y herramientas para tu práctica diaria
+· Perfil profesional y visibilidad en nuestro directorio
+
+Puedes darte de alta de forma gratuita aquí:
+https://mediazion.eu/mediadores
+
+Tras el alta, tendrás un periodo de prueba PRO en el que podrás usar todas las funciones del panel.
+Si lo deseas, podemos agendar también una llamada breve para enseñarte el panel en directo.
+
+Un saludo,
+Mediazion
+"""
+
+    if kind == "cliente":
+        return f"""Hola {name},
+
+Gracias por escribirnos. Hemos recibido tu mensaje correctamente. 👋
+
+Mediazion trabaja con una red de mediadores profesionales que pueden ayudarte
+a gestionar conflictos de forma rápida y confidencial.
+
+Para orientarte mejor, te agradeceríamos que nos cuentes, muy brevemente:
+· Tipo de conflicto (familiar, vecinal, laboral, empresarial…)
+· Ciudad o zona
+· Si hay otras personas implicadas
+
+Con esta información podremos derivarte al mediador adecuado o darte una primera orientación.
+
+Un saludo,
+Mediazion
+"""
+
+    # otro / prueba
+    return f"""Hola {name},
+
+Gracias por tu mensaje, confirmamos que nos ha llegado correctamente. ✅
+
+Mediazion es una plataforma para mediadores y para personas que necesitan mediación:
+· Si eres mediador, podemos darte acceso a un Panel PRO con IA, actas, agenda y gestión de casos.
+· Si buscas ayuda para un conflicto concreto, podemos derivarte a un mediador de nuestra red.
+
+Si nos indicas si eres mediador o cliente, podremos darte información más concreta.
+
+Un saludo,
+Mediazion
+"""
+
+
 @contact_router.post("/contact")
 def contact(data: ContactIn):
     if not data.accept:
         raise HTTPException(400, "Debes aceptar la política de privacidad.")
 
+    # Clasificar el mensaje
+    kind, confidence = classify_contact(data)
+    auto_reply_text = build_auto_reply(data, kind)
+    # Lo envolvemos en HTML sencillo
     user_html = f"""
-    <div style="font-family:system-ui,Segoe UI,Roboto,Arial">
-      <p>Hola {data.name},</p>
-      <p>Hemos recibido tu solicitud y te responderemos pronto.</p>
-      <p><strong>Asunto:</strong> {data.subject}</p>
-      <p><strong>Mensaje:</strong><br/>{data.message}</p>
-      <p>Equipo MEDIAZION</p>
+    <div style="font-family:system-ui,Segoe UI,Roboto,Arial; white-space:pre-wrap">
+{auto_reply_text}
     </div>
     """
+
+    # Email interno para info@
     info_html = f"""
     <div style="font-family:system-ui,Segoe UI,Roboto,Arial">
       <p>Nuevo contacto desde la web:</p>
@@ -104,6 +206,7 @@ def contact(data: ContactIn):
         <li><strong>Nombre:</strong> {data.name}</li>
         <li><strong>Email:</strong> {data.email}</li>
         <li><strong>Asunto:</strong> {data.subject}</li>
+        <li><strong>Tipo detectado:</strong> {kind} (conf={confidence:.2f})</li>
       </ul>
       <p>{data.message}</p>
     </div>
@@ -115,9 +218,22 @@ def contact(data: ContactIn):
     mail_error = ""
 
     try:
-        _send_mail(data.email, "Hemos recibido tu solicitud · MEDIAZION", user_html, data.name)
+        # Auto-respuesta al usuario
+        _send_mail(
+            data.email,
+            "Hemos recibido tu mensaje · MEDIAZION",
+            user_html,
+            data.name,
+        )
         mail_user_sent = True
-        _send_mail(MAIL_TO_DEFAULT, f"[Contacto] {data.subject} — {data.name} <{data.email}>", info_html, "MEDIAZION")
+
+        # Copia interna para MEDIAZION
+        _send_mail(
+            MAIL_TO_DEFAULT,
+            f"[Contacto] {data.subject} — {data.name} <{data.email}>",
+            info_html,
+            "MEDIAZION",
+        )
         mail_info_sent = True
     except RuntimeError:
         # SMTP no configurado: devolvemos ok pero marcamos sent=False
@@ -126,4 +242,11 @@ def contact(data: ContactIn):
         # Error de transporte (p.ej. 'Connection unexpectedly closed')
         mail_error = str(e)
 
-    return {"ok": True, "sent_user": mail_user_sent, "sent_info": mail_info_sent, "mail_error": mail_error}
+    return {
+        "ok": True,
+        "sent_user": mail_user_sent,
+        "sent_info": mail_info_sent,
+        "mail_error": mail_error,
+        "type": kind,
+        "confidence": confidence,
+    }
