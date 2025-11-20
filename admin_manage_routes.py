@@ -4,8 +4,12 @@ from fastapi import APIRouter, Header, HTTPException, Query
 from db import pg_conn
 from datetime import datetime, timedelta, timezone
 
+# Usamos el mismo prefijo y tag de siempre
 admin_manage = APIRouter(prefix="/admin/mediadores", tags=["admin-mediadores"])
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or "8354Law18354Law1@"
+
+# ❗ Muy importante: usar el MISMO ADMIN_TOKEN que admin_routes.py
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or "supersecreto123"
+
 
 def _auth(x_admin_token: str | None):
     if x_admin_token != ADMIN_TOKEN:
