@@ -1,5 +1,5 @@
 # actas_routes.py — generación de ACTAS en DOCX (simple y robusto)
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 import os
@@ -26,7 +26,7 @@ class ActaIn(BaseModel):
     logo_url: Optional[str] = "https://mediazion.eu/logo.png"
 
 @actas_router.post("/actas/render_docx")
-def render_docx(body: ActaIn):
+def render_docx(body: ActaIn, request: Request):
     try:
         doc = Document()
 
@@ -66,7 +66,8 @@ def render_docx(body: ActaIn):
         path = os.path.join(ACTAS_DIR, filename)
         doc.save(path)
 
-        return {"ok": True, "url": f"/uploads/actas/{filename}"}
+        base_url = str(request.base_url).rstrip("/")
+        return {"ok": True, "url": f"{base_url}/uploads/actas/{filename}"}
 
     except Exception as e:
         raise HTTPException(500, f"Error generando el acta: {str(e)}")
