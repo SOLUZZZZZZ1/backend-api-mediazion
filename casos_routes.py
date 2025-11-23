@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS casos (
   mediador_email  TEXT NOT NULL,
   titulo          TEXT NOT NULL,
   descripcion     TEXT,
-  estado          TEXT NOT NULL DEFAULT 'abierto',
+  estado          TEXT NOT NULL DEFAULT 'abierto',   -- abierto | en_curso | cerrado
   archivos        JSONB,
   fecha_inicio    TIMESTAMP DEFAULT NOW(),
   fecha_cierre    TIMESTAMP NULL,
@@ -210,10 +210,10 @@ def actualizar_caso(caso_id: int, body: CasoUpdate):
     """
     email_norm = body.email.strip().lower()
 
-    # Primero cargamos el caso existente
     try:
         with pg_conn() as cx, cx.cursor() as cur:
             _ensure_table(cur)
+            # Cargar caso actual
             cur.execute(
                 """
                 SELECT id, mediador_email, titulo, descripcion, estado,
@@ -231,7 +231,11 @@ def actualizar_caso(caso_id: int, body: CasoUpdate):
             current = _row_to_dict(row)
 
             new_titulo = (body.titulo or current["titulo"] or "").strip()
-            new_desc = body.descripcion if body.descripcion is not None else current["descripcion"]
+            new_desc = (
+                body.descripcion
+                if body.descripcion is not None
+                else current["descripcion"]
+            )
             new_estado = (body.estado or current["estado"] or "abierto").strip().lower()
             if new_estado not in ("abierto", "en_curso", "cerrado"):
                 new_estado = current["estado"] or "abierto"

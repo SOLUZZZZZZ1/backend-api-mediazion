@@ -2,7 +2,8 @@
 from fastapi import APIRouter, HTTPException
 from db import pg_conn
 
-instituciones_router = APIRouter(prefix="/api/instituciones", tags=["instituciones"])
+# Este router se montará bajo "/api" desde app_casos.py
+instituciones_router = APIRouter(prefix="/instituciones", tags=["instituciones"])
 
 @instituciones_router.post("/registro")
 def registro_institucion(body: dict):
