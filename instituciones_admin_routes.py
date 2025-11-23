@@ -39,6 +39,10 @@ class CrearUsuarioBody(BaseModel):
     creado_por: str = "admin@mediazion.eu"
 
 
+class DesactivarUsuarioBody(BaseModel):
+    email: str
+
+
 # -------------------------
 # Helpers internos
 # -------------------------
@@ -70,7 +74,7 @@ def _row_to_registro(row):
 
 
 # -------------------------
-# Endpoints
+# Endpoints: solicitudes
 # -------------------------
 @admin_instituciones_router.get("/solicitudes")
 def listar_solicitudes(x_admin_token: Optional[str] = Header(None)):
@@ -150,6 +154,9 @@ def cambiar_estado(
     return {"ok": True, "id": solicitud_id, "estado": nuevo_estado}
 
 
+# -------------------------
+# Endpoints: usuarios institucionales
+# -------------------------
 @admin_instituciones_router.post("/crear_usuario")
 def crear_usuario_desde_solicitud(
     body: CrearUsuarioBody,
@@ -159,6 +166,9 @@ def crear_usuario_desde_solicitud(
     Crea/actualiza un usuario institucional a partir de una solicitud.
     También actualiza el estado de la solicitud a 'aprobada' y
     devuelve datos para mostrar en el panel admin.
+
+    Si ya existe un usuario con ese email, se reactiva, se
+    actualiza la contraseña y se renueva la fecha de expiración.
     """
     _auth(x_admin_token)
 
@@ -277,3 +287,43 @@ Un saludo,
         "email": solicitud["email"],
         "fecha_expiracion": fecha_expiracion.isoformat(),
     }
+
+
+@admin_instituciones_router.post("/desactivar_usuario")
+def desactivar_usuario(
+    body: DesactivarUsuarioBody,
+    x_admin_token: Optional[str] = Header(None),
+):
+    """
+    Desactiva/suspende manualmente el acceso de un usuario institucional.
+    - Cambia estado a 'suspendido'
+    - Si la fecha de expiración es futura o NULL, la adelanta a ahora
+    """
+    _auth(x_admin_token)
+    email = body.email.strip()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email obligatorio")
+
+    now = datetime.now(timezone.utc)
+
+    with pg_conn() as cx, cx.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE instituciones_usuarios
+               SET estado = 'suspendido',
+                   fecha_expiracion = CASE
+                       WHEN fecha_expiracion IS NULL OR fecha_expiracion > %s
+                       THEN %s
+                       ELSE fecha_expiracion
+                   END
+             WHERE LOWER(email) = LOWER(%s);
+            """,
+            (now, now, email),
+        )
+        updated = cur.rowcount
+        cx.commit()
+
+    if updated == 0:
+        raise HTTPException(status_code=404, detail="Usuario institucional no encontrado")
+
+    return {"ok": True, "email": email, "estado": "suspendido"}
