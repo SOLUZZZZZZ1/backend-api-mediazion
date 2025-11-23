@@ -1,4 +1,4 @@
-# migrate_routes.py — Migraciones idempotentes (mediadores + voces + perfil + agenda) + utilidades admin
+# migrate_routes.py — Migraciones idempotentes (mediadores + voces + perfil + agenda + instituciones) + utilidades admin
 import os
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Header, HTTPException
@@ -157,7 +157,7 @@ def perfil_add_cols(x_admin_token: str | None = Header(None)):
 SQL_AGENDA = """
 CREATE TABLE IF NOT EXISTS agenda (
   id SERIAL PRIMARY KEY,
-  mediador_email  TEXT NOT NULL,
+  mediador_email  TEXT NOT NOT NULL,
   titulo          TEXT NOT NULL,
   descripcion     TEXT,
   fecha           TIMESTAMP NOT NULL,
@@ -252,3 +252,57 @@ def set_trial(email: str, days: int = 7, x_admin_token: str | None = Header(None
         raise
     except Exception as e:
         raise HTTPException(500, f"Error activando trial: {e}")
+
+# ---------------- INSTITUCIONES (REGISTRO + USUARIOS) ----------------
+
+SQL_INSTITUCIONES_REGISTRO = """
+CREATE TABLE IF NOT EXISTS instituciones_registro (
+  id SERIAL PRIMARY KEY,
+  tipo VARCHAR(50) NOT NULL,          -- ayuntamiento | camara | colegio | otra
+  institucion TEXT NOT NULL,
+  cargo TEXT NOT NULL,
+  nombre TEXT NOT NULL,
+  email TEXT NOT NULL,
+  telefono TEXT,
+  provincia TEXT,
+  comentarios TEXT,
+  estado VARCHAR(20) DEFAULT 'pendiente',   -- pendiente | aprobada | rechazada
+  created_at TIMESTAMP DEFAULT NOW()
+);
+"""
+
+SQL_INSTITUCIONES_USUARIOS = """
+CREATE TABLE IF NOT EXISTS instituciones_usuarios (
+  id SERIAL PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  institucion TEXT NOT NULL,
+  tipo VARCHAR(50) NOT NULL,         -- ayuntamiento | camara | colegio | otra
+  cargo TEXT NOT NULL,
+  nombre TEXT NOT NULL,
+  provincia TEXT,
+  estado VARCHAR(20) DEFAULT 'activo',   -- activo | caducado | suspendido
+  fecha_activacion TIMESTAMP DEFAULT NOW(),
+  fecha_expiracion TIMESTAMP,
+  creado_por TEXT,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+"""
+
+@router.post("/instituciones/init")
+def instituciones_init(x_admin_token: str | None = Header(None)):
+    """
+    Crea las tablas de registro y usuarios institucionales si no existen.
+    - instituciones_registro
+    - instituciones_usuarios
+    """
+    _auth(x_admin_token)
+    try:
+        with pg_conn() as cx:
+            with cx.cursor() as cur:
+                cur.execute(SQL_INSTITUCIONES_REGISTRO)
+                cur.execute(SQL_INSTITUCIONES_USUARIOS)
+            cx.commit()
+        return {"status": "ok", "message": "Tablas de instituciones listas."}
+    except Exception as e:
+        raise HTTPException(500, f"Instituciones init error: {e}")
