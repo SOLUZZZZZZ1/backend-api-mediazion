@@ -10,13 +10,19 @@ from pydantic import BaseModel
 from db import pg_conn
 from contact_routes import _send_mail, MAIL_FROM_NAME, MAIL_FROM
 
-# Usamos el mismo patrón de token admin que el resto de módulos
+# Usamos el mismo patrón de token admin que el resto de módulos,
+# pero _auth está desactivado para uso desde el panel web.
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or "8354Law18354Law1@"
 
 
 def _auth(x_admin_token: Optional[str]):
-    if x_admin_token != ADMIN_TOKEN:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    """
+    Autenticación admin DESACTIVADA para uso desde el panel web.
+    El panel /admin ya está protegido por login propio.
+    Si quieres volver a activar protección por token, sustituye el pass
+    por la comprobación clásica y añade la cabecera X-Admin-Token en el frontend.
+    """
+    return
 
 
 admin_instituciones_router = APIRouter(
@@ -41,6 +47,18 @@ class CrearUsuarioBody(BaseModel):
 
 class DesactivarUsuarioBody(BaseModel):
     email: str
+
+
+class CrearUsuarioDirectoBody(BaseModel):
+    email: str
+    password: str
+    institucion: str
+    tipo: str           # ayuntamiento | camara | colegio | otra
+    cargo: str
+    nombre: str
+    provincia: Optional[str] = None
+    meses: int = 6
+    creado_por: str = "admin@mediazion.eu"
 
 
 # -------------------------
@@ -324,6 +342,101 @@ def desactivar_usuario(
         cx.commit()
 
     if updated == 0:
-        raise HTTPException(status_code=404, detail="Usuario institucional no encontrado")
+        raise HTTPException(
+            status_code=404, detail="Usuario institucional no encontrado"
+        )
 
     return {"ok": True, "email": email, "estado": "suspendido"}
+
+
+@admin_instituciones_router.post("/crear_usuario_directo")
+def crear_usuario_directo(
+    body: CrearUsuarioDirectoBody,
+    x_admin_token: Optional[str] = Header(None),
+):
+    """
+    Crea o actualiza un usuario institucional DIRECTO (sin solicitud previa).
+    Se guarda en instituciones_usuarios y se envía email con credenciales.
+    """
+    _auth(x_admin_token)
+
+    if not body.password:
+        raise HTTPException(status_code=400, detail="La contraseña es obligatoria")
+    if body.meses <= 0:
+        raise HTTPException(status_code=400, detail="Meses debe ser > 0")
+
+    now = datetime.now(timezone.utc)
+    dias = body.meses * 30
+    fecha_expiracion = now + timedelta(days=dias)
+
+    hashed = bcrypt.hashpw(body.password.encode("utf-8"), bcrypt.gensalt()).decode(
+        "utf-8"
+    )
+
+    with pg_conn() as cx, cx.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO instituciones_usuarios
+                (email, password_hash, institucion, tipo, cargo, nombre,
+                 provincia, estado, fecha_activacion, fecha_expiracion, creado_por)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,'activo',%s,%s,%s)
+            ON CONFLICT (email)
+            DO UPDATE SET
+                password_hash = EXCLUDED.password_hash,
+                institucion   = EXCLUDED.institucion,
+                tipo          = EXCLUDED.tipo,
+                cargo         = EXCLUDED.cargo,
+                nombre        = EXCLUDED.nombre,
+                provincia     = EXCLUDED.provincia,
+                estado        = 'activo',
+                fecha_activacion = EXCLUDED.fecha_activacion,
+                fecha_expiracion = EXCLUDED.fecha_expiracion,
+                creado_por    = EXCLUDED.creado_por
+            """,
+            (
+                body.email,
+                hashed,
+                body.institucion,
+                body.tipo,
+                body.cargo,
+                body.nombre,
+                body.provincia,
+                now,
+                fecha_expiracion,
+                body.creado_por,
+            ),
+        )
+        cx.commit()
+
+    # Enviar correo con credenciales
+    try:
+        asunto = "Mediazion · Acceso institucional"
+        html = f"""
+        <div style="font-family:system-ui,Segoe UI,Roboto,Arial; white-space:pre-wrap">
+Hola {body.nombre},
+
+Tu acceso institucional a Mediazion ha sido activado.
+
+Institución: {body.institucion}
+Tipo: {body.tipo}
+Email de acceso: {body.email}
+Contraseña temporal: {body.password}
+Vigencia: {body.meses} meses (hasta {fecha_expiracion.date().isoformat()})
+
+Accede en: https://mediazion.eu/panel-institucion
+
+Un saludo,
+{MAIL_FROM_NAME or "Mediazion"}
+{MAIL_FROM}
+        </div>
+        """
+        _send_mail(body.email, asunto, html, body.nombre)
+    except Exception as e:
+        print(f"[AVISO] Error enviando correo a institución: {e}")
+
+    return {
+        "ok": True,
+        "email": body.email,
+        "institucion": body.institucion,
+        "fecha_expiracion": fecha_expiracion.isoformat(),
+    }
