@@ -120,7 +120,7 @@ try:
 except:
     casos_router = None
 
-# 🔹 Instituciones (nuevo: registro institucional)
+# 🔹 Instituciones (registro institucional)
 try:
     from instituciones_routes import instituciones_router
 except:
@@ -186,10 +186,11 @@ if casos_router:
 
 # Instituciones (nuevo)
 if instituciones_router:
-    app.include_router(instituciones_router, prefix="/api/instituciones", tags=["instituciones"])
+    # OJO: el router ya tiene prefix="/instituciones"
+    # Así la ruta final queda: /api/instituciones/registro
+    app.include_router(instituciones_router, prefix="/api", tags=["instituciones"])
 
 
 # ---------------------------------------------------------
 # END
 # ---------------------------------------------------------
-
