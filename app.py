@@ -126,6 +126,12 @@ try:
 except:
     instituciones_router = None
 
+# 🔹 Instituciones · admin (NUEVO)
+try:
+    from instituciones_admin_routes import admin_instituciones_router
+except:
+    admin_instituciones_router = None
+
 
 # ---------------------------------------------------------
 # REGISTER ROUTERS (orden estable y limpio)
@@ -184,11 +190,19 @@ if migrate_router:
 if casos_router:
     app.include_router(casos_router, prefix="/api", tags=["casos"])
 
-# Instituciones (nuevo)
+# Instituciones (público)
 if instituciones_router:
     # OJO: el router ya tiene prefix="/instituciones"
     # Así la ruta final queda: /api/instituciones/registro
     app.include_router(instituciones_router, prefix="/api", tags=["instituciones"])
+
+# Instituciones · admin (NUEVO)
+if admin_instituciones_router:
+    app.include_router(
+        admin_instituciones_router,
+        prefix="/api",
+        tags=["instituciones-admin"],
+    )
 
 
 # ---------------------------------------------------------
