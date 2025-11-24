@@ -1,4 +1,4 @@
-# instituciones_casos_routes.py — Casos institucionales (lista + detalle + estado + notas)
+# instituciones_casos_routes.py — Casos institucionales (lista + detalle + estado + notas + alta)
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
@@ -6,12 +6,14 @@ from db import pg_conn
 
 router = APIRouter(prefix="/api/instituciones", tags=["instituciones-casos"])
 
+
 class CasoResumen(BaseModel):
     id: int
     asunto: str
     ciudadano_nombre: str
     estado: str
     fecha_creacion: str
+
 
 class CasoDetalle(BaseModel):
     id: int
@@ -25,8 +27,10 @@ class CasoDetalle(BaseModel):
     fecha_creacion: str
     fecha_actualizacion: Optional[str] = None
 
+
 class NotaEntrada(BaseModel):
     contenido: str
+
 
 class Nota(BaseModel):
     id: int
@@ -34,8 +38,18 @@ class Nota(BaseModel):
     contenido: str
     creada_en: str
 
+
 class EstadoEntrada(BaseModel):
     estado: str  # pendiente | en_gestion | resuelto | etc.
+
+
+class CasoNuevo(BaseModel):
+    ciudadano_nombre: str
+    ciudadano_email: Optional[str] = None
+    ciudadano_telefono: Optional[str] = None
+    asunto: str
+    descripcion: Optional[str] = None
+
 
 SQL_CREATE_CASOS = """
 CREATE TABLE IF NOT EXISTS casos_institucion (
@@ -61,15 +75,19 @@ CREATE TABLE IF NOT EXISTS casos_notas (
 );
 """
 
+
 def _ensure_tables():
+    """Garantiza que las tablas de casos y notas existen (idempotente)."""
     with pg_conn() as cx:
         with cx.cursor() as cur:
             cur.execute(SQL_CREATE_CASOS)
             cur.execute(SQL_CREATE_NOTAS)
         cx.commit()
 
+
 @router.get("/casos", response_model=List[CasoResumen])
 def listar_casos(email: str):
+    """Lista casos de una institución (por email institucional)."""
     if not email:
         raise HTTPException(400, "Email institucional requerido")
 
@@ -104,9 +122,12 @@ def listar_casos(email: str):
         )
     return casos
 
+
 @router.get("/casos/{caso_id}", response_model=CasoDetalle)
 def obtener_caso(caso_id: int):
+    """Detalle de un caso institucional por ID."""
     _ensure_tables()
+
     try:
         with pg_conn() as cx:
             with cx.cursor() as cur:
@@ -160,13 +181,16 @@ def obtener_caso(caso_id: int):
         fecha_actualizacion=fecha_actualizacion.isoformat() if fecha_actualizacion else None,
     )
 
+
 @router.post("/casos/{caso_id}/estado")
 def actualizar_estado_caso(caso_id: int, entrada: EstadoEntrada):
+    """Actualiza el estado de un caso institucional."""
     nuevo_estado = (entrada.estado or "").strip()
     if not nuevo_estado:
         raise HTTPException(400, "El estado no puede estar vacío")
 
     _ensure_tables()
+
     try:
         with pg_conn() as cx:
             with cx.cursor() as cur:
@@ -189,16 +213,20 @@ def actualizar_estado_caso(caso_id: int, entrada: EstadoEntrada):
 
     return {"ok": True, "id": caso_id, "estado": nuevo_estado}
 
+
 @router.post("/casos/{caso_id}/nota", response_model=Nota)
 def agregar_nota_caso(caso_id: int, entrada: NotaEntrada):
+    """Añade una nota interna al caso."""
     contenido = (entrada.contenido or "").strip()
     if not contenido:
         raise HTTPException(400, "El contenido de la nota no puede estar vacío")
 
     _ensure_tables()
+
     try:
         with pg_conn() as cx:
             with cx.cursor() as cur:
+                # Comprobamos que el caso existe
                 cur.execute("SELECT id FROM casos_institucion WHERE id = %s", (caso_id,))
                 if not cur.fetchone():
                     raise HTTPException(404, "Caso no encontrado")
@@ -225,9 +253,12 @@ def agregar_nota_caso(caso_id: int, entrada: NotaEntrada):
         creada_en=creada_en.isoformat() if creada_en else "",
     )
 
+
 @router.get("/casos/{caso_id}/notas", response_model=list[Nota])
 def listar_notas_caso(caso_id: int):
+    """Lista las notas internas de un caso institucional."""
     _ensure_tables()
+
     try:
         with pg_conn() as cx:
             with cx.cursor() as cur:
@@ -255,3 +286,48 @@ def listar_notas_caso(caso_id: int):
             )
         )
     return notas
+
+
+@router.post("/casos/nuevo")
+def crear_caso(email: str, body: CasoNuevo):
+    """
+    Crea un nuevo caso institucional para la institución cuyo email se pasa en query.
+    Se usará desde el panel, como si fuera un funcionario.
+    """
+    institucion_email = (email or "").strip()
+    if not institucion_email:
+        raise HTTPException(400, "Email institucional requerido")
+
+    ciudadano_nombre = (body.ciudadano_nombre or "").strip()
+    asunto = (body.asunto or "").strip()
+
+    if not ciudadano_nombre or not asunto:
+        raise HTTPException(400, "Nombre del ciudadano y asunto son obligatorios.")
+
+    _ensure_tables()
+
+    try:
+        with pg_conn() as cx:
+            with cx.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO casos_institucion
+                    (institucion_email, ciudadano_nombre, ciudadano_email, ciudadano_telefono, asunto, descripcion, estado)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'pendiente')
+                    RETURNING id
+                    """,
+                    (
+                        institucion_email,
+                        ciudadano_nombre,
+                        body.ciudadano_email,
+                        body.ciudadano_telefono,
+                        asunto,
+                        body.descripcion,
+                    ),
+                )
+                cid = cur.fetchone()[0]
+            cx.commit()
+    except Exception as e:
+        raise HTTPException(500, f"Error creando caso: {e}")
+
+    return {"ok": True, "id": cid}
