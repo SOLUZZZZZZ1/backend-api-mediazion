@@ -131,6 +131,7 @@ try:
     from instituciones_admin_routes import admin_instituciones_router
 except:
     admin_instituciones_router = None
+from instituciones_login_routes import router as instituciones_login_router
 
 
 # ---------------------------------------------------------
@@ -195,6 +196,7 @@ if instituciones_router:
     # OJO: el router ya tiene prefix="/instituciones"
     # Así la ruta final queda: /api/instituciones/registro
     app.include_router(instituciones_router, prefix="/api", tags=["instituciones"])
+    app.include_router(instituciones_login_router)
 
 # Instituciones · admin (NUEVO)
 if admin_instituciones_router:
