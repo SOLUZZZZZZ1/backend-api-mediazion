@@ -125,6 +125,9 @@ try:
     from instituciones_routes import instituciones_router
 except:
     instituciones_router = None
+from instituciones_casos_routes import router as instituciones_casos_router
+from instituciones_actas_routes import router as instituciones_actas_router
+from instituciones_agenda_routes import router as instituciones_agenda_router
 
 # 🔹 Instituciones · admin (NUEVO)
 try:
@@ -197,6 +200,9 @@ if instituciones_router:
     # Así la ruta final queda: /api/instituciones/registro
     app.include_router(instituciones_router, prefix="/api", tags=["instituciones"])
     app.include_router(instituciones_login_router)
+    app.include_router(instituciones_casos_router)
+    app.include_router(instituciones_actas_router)
+    app.include_router(instituciones_agenda_router)
 
 # Instituciones · admin (NUEVO)
 if admin_instituciones_router:
