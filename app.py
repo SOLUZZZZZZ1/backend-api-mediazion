@@ -128,6 +128,7 @@ except:
 from instituciones_casos_routes import router as instituciones_casos_router
 from instituciones_actas_routes import router as instituciones_actas_router
 from instituciones_agenda_routes import router as instituciones_agenda_router
+from instituciones_api import router as instituciones_api_router
 
 # 🔹 Instituciones · admin (NUEVO)
 try:
@@ -203,6 +204,7 @@ if instituciones_router:
     app.include_router(instituciones_casos_router)
     app.include_router(instituciones_actas_router)
     app.include_router(instituciones_agenda_router)
+    app.include_router(instituciones_api_router)
 
 # Instituciones · admin (NUEVO)
 if admin_instituciones_router:
