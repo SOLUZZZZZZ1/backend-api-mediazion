@@ -74,6 +74,7 @@ from upload_routes import upload_router
 
 # 🔹 Actas DOCX/PDF
 from actas_routes import actas_router
+from actas_docx_logo import router as actas_docx_router
 
 # 🔹 Contacto web
 from contact_routes import contact_router
@@ -157,6 +158,7 @@ app.include_router(upload_router, prefix="/api", tags=["upload"])
 
 # Actas
 app.include_router(actas_router, prefix="/api", tags=["actas"])
+app.include_router(actas_docx_router)
 
 # Contacto
 app.include_router(contact_router, prefix="/api", tags=["contact"])
